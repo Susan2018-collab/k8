@@ -2,20 +2,20 @@ pipeline {
     agent any
 
     environment {
-        KUBECONFIG_FILE = '/tmp/kubeconfig' // Temporary kubeconfig path
-        DEPLOYMENT_NAME = 'nginx-deployment'
-        NAMESPACE = 'dev'
-        REPLICAS = '5' // Desired number of replicas
+        // Temporary KUBECONFIG path
+        KUBECONFIG_PATH = '/tmp/kubeconfig'
     }
 
     stages {
         stage('Setup Kubeconfig') {
             steps {
-                // 'kubeconfig-base64' is your Jenkins string secret ID
-                withCredentials([string(credentialsId: 'kubeconfig-base64', variable: 'KUBECONFIG_B64')]) {
+                withCredentials([string(credentialsId: 'kubeconfig-base64', variable: 'KUBECONFIG_BASE64')]) {
                     sh '''
-                        echo "$KUBECONFIG_B64" | base64 --decode > $KUBECONFIG_FILE
-                        kubectl --kubeconfig=$KUBECONFIG_FILE config view
+                        # Decode the base64 kubeconfig into a file
+                        echo $KUBECONFIG_BASE64 | base64 --decode > $KUBECONFIG_PATH
+                        chmod 600 $KUBECONFIG_PATH
+                        export KUBECONFIG=$KUBECONFIG_PATH
+                        kubectl config view
                     '''
                 }
             }
@@ -24,11 +24,9 @@ pipeline {
         stage('Scale Deployment') {
             steps {
                 sh '''
-                    echo "Scaling deployment $DEPLOYMENT_NAME in namespace $NAMESPACE to $REPLICAS replicas"
-                    kubectl --kubeconfig=$KUBECONFIG_FILE scale deployment $DEPLOYMENT_NAME --replicas=$REPLICAS -n $NAMESPACE
-                    
-                    echo "Verifying scaling..."
-                    kubectl --kubeconfig=$KUBECONFIG_FILE get deployment $DEPLOYMENT_NAME -n $NAMESPACE -o wide
+                    export KUBECONFIG=$KUBECONFIG_PATH
+                    kubectl scale deployment nginx-deployment --replicas=3 -n dev
+                    kubectl get deployment nginx-deployment -n dev -o wide
                 '''
             }
         }
@@ -36,8 +34,14 @@ pipeline {
 
     post {
         always {
-            // Clean up temporary kubeconfig
-            sh 'rm -f $KUBECONFIG_FILE'
+            // Clean up temporary kubeconfig file
+            sh 'rm -f $KUBECONFIG_PATH'
+        }
+        success {
+            echo 'Deployment scaled successfully!'
+        }
+        failure {
+            echo 'Pipeline failed. Check logs.'
         }
     }
 }
