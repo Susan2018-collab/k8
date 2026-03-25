@@ -1,35 +1,43 @@
 pipeline {
     agent any
 
+    environment {
+        DEV_NAMESPACE  = "dev"
+        PROD_NAMESPACE = "prod"
+        DEV_DEPLOYMENT  = "nginx-deployment"
+        PROD_DEPLOYMENT = "nginx-deployment-prod"
+        NGINX_IMAGE     = "nginx:latest"  // or specify a version
+    }
+
     stages {
-        stage('Checkout') {
+        stage('Update Nginx in DEV') {
             steps {
-                echo "Cloning repository..."
-                git url: 'https://github.com/Susan2018-collab/k8.git', branch: 'main'
+                echo "Updating Nginx in DEV namespace..."
+                sh """
+                    kubectl set image deployment/${DEV_DEPLOYMENT} nginx=${NGINX_IMAGE} -n ${DEV_NAMESPACE}
+                    kubectl rollout status deployment/${DEV_DEPLOYMENT} -n ${DEV_NAMESPACE}
+                """
             }
         }
 
-        stage('Build') {
+        stage('Update Nginx in PROD') {
             steps {
-                echo "Running a simple build step..."
-                sh 'echo Hello, Jenkins! Your pipeline is working.'
-            }
-        }
-
-        stage('Test') {
-            steps {
-                echo "Running a simple test step..."
-                sh 'echo Testing complete!'
+                input message: "Approve update for PROD namespace?"
+                echo "Updating Nginx in PROD namespace..."
+                sh """
+                    kubectl set image deployment/${PROD_DEPLOYMENT} nginx=${NGINX_IMAGE} -n ${PROD_NAMESPACE}
+                    kubectl rollout status deployment/${PROD_DEPLOYMENT} -n ${PROD_NAMESPACE}
+                """
             }
         }
     }
 
     post {
         success {
-            echo "✅ Pipeline succeeded!"
+            echo "✅ Nginx updated successfully in DEV and PROD!"
         }
         failure {
-            echo "❌ Pipeline failed!"
+            echo "❌ Update failed in one or more namespaces."
         }
     }
 }
