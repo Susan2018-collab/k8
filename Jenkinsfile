@@ -2,74 +2,50 @@ pipeline {
     agent any
 
     environment {
-        DEV_NAMESPACE  = "dev"
-        PROD_NAMESPACE = "prod"
-        DEV_DEPLOYMENT  = "nginx-deployment"
-        PROD_DEPLOYMENT = "nginx-deployment-prod"
-        NGINX_IMAGE     = "nginx:latest"
-        KUBECONFIG      = "/root/.kube/config"
+        DEV_NS = "dev"
+        PROD_NS = "prod"
+        DEPLOYMENT_DEV = "nginx-deployment"
+        DEPLOYMENT_PROD = "nginx-deployment-prod"
     }
 
     stages {
-        stage('Update Nginx in DEV') {
+        stage('Scale DEV Deployment') {
             steps {
-                echo "Updating Nginx in DEV namespace..."
+                echo "Scaling DEV deployment..."
                 sh '''
-                    kubectl set image deployment/${DEV_DEPLOYMENT} nginx=${NGINX_IMAGE} -n ${DEV_NAMESPACE}
-                    kubectl rollout status deployment/${DEV_DEPLOYMENT} -n ${DEV_NAMESPACE}
+                    # Get current replicas
+                    CURRENT=$(kubectl get deployment $DEPLOYMENT_DEV -n $DEV_NS -o jsonpath='{.spec.replicas}')
+                    echo "Current DEV replicas: $CURRENT"
+                    # Increment replicas by 1
+                    NEW=$((CURRENT+1))
+                    kubectl scale deployment $DEPLOYMENT_DEV --replicas=$NEW -n $DEV_NS
+                    echo "Scaled DEV deployment to $NEW replicas"
                 '''
             }
         }
 
-        stage('Update Nginx in PROD') {
+        stage('Scale PROD Deployment') {
             steps {
-                input message: "Approve update for PROD namespace?"
-                echo "Updating Nginx in PROD namespace..."
+                echo "Scaling PROD deployment..."
                 sh '''
-                    kubectl set image deployment/${PROD_DEPLOYMENT} nginx=${NGINX_IMAGE} -n ${PROD_NAMESPACE}
-                    kubectl rollout status deployment/${PROD_DEPLOYMENT} -n ${PROD_NAMESPACE}
+                    # Get current replicas
+                    CURRENT=$(kubectl get deployment $DEPLOYMENT_PROD -n $PROD_NS -o jsonpath='{.spec.replicas}')
+                    echo "Current PROD replicas: $CURRENT"
+                    # Increment replicas by 1
+                    NEW=$((CURRENT+1))
+                    kubectl scale deployment $DEPLOYMENT_PROD --replicas=$NEW -n $PROD_NS
+                    echo "Scaled PROD deployment to $NEW replicas"
                 '''
-        IMAGE_NAME = 'nginx:latest'
-    }
-
-    stages {
-        stage('Checkout') {
-            steps {
-                echo "Cloning repository..."
-                git url: 'https://github.com/Susan2018-collab/k8.git', branch: 'main'
-            }
-        }
-
-        stage('Verify Docker') {
-            steps {
-                echo "Checking Docker availability..."
-                sh 'docker ps || { echo "Docker not available"; exit 1; }'
-            }
-        }
-
-        stage('Security Scan') {
-            steps {
-                echo "Running Trivy scan on ${IMAGE_NAME}..."
-                sh """
-                trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_NAME}
-                """
-            }
-        }
-
-        stage('Next Step') {
-            steps {
-                echo "Next stage placeholder..."
             }
         }
     }
 
     post {
         success {
-            echo "✅ Update completed successfully!"
+            echo "✅ Scaling completed successfully!"
         }
         failure {
-            echo "❌ Update failed!"
-            echo "✅ Pipeline succeeded!"
+            echo "❌ Scaling failed!"
         }
     }
 }
