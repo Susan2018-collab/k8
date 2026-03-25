@@ -2,89 +2,36 @@ pipeline {
     agent any
 
     environment {
-        DEV_NAMESPACE = 'dev'
-        PROD_NAMESPACE = 'prod'
-        DEPLOYMENT_NAME = 'nginx-deployment'
-        IMAGE_NAME = 'nginx:latest'
-        GIT_REPO = 'https://github.com/Susan2018-collab/k8.git'
-        BRANCH = 'main'
+        IMAGE_NAME = 'nginx:latest'  // your image to scan
     }
 
     stages {
-        stage('Checkout') {
+        stage('Security Scan') {
             steps {
-                echo "Cloning Git repository..."
-                git branch: "${BRANCH}", url: "${GIT_REPO}"
-            }
-        }
+                echo "Scanning container image for vulnerabilities using Trivy..."
+                script {
+                    // Install Trivy if not already installed (optional for Jenkins agents)
+                    sh '''
+                    if ! command -v trivy &> /dev/null
+                    then
+                        echo "Trivy not found, installing..."
+                        brew install aquasecurity/trivy/trivy || curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+                    fi
+                    '''
 
-        stage('Ensure Minikube & Kubernetes') {
-            steps {
-                echo "Starting Minikube..."
-                sh 'minikube start --driver=docker'
-                sh 'kubectl get nodes'
-            }
-        }
+                    // Run the security scan
+                    def result = sh(
+                        script: "trivy image --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_NAME}",
+                        returnStatus: true
+                    )
 
-        stage('Deploy to DEV') {
-            steps {
-                echo "Deploying to DEV namespace..."
-                sh "kubectl apply -f nginx-configmap.yaml -n ${DEV_NAMESPACE}"
-                sh "kubectl apply -f nginx-service.yaml -n ${DEV_NAMESPACE}"
-                sh "kubectl apply -f nginx-deployment.yaml -n ${DEV_NAMESPACE}"
-                sh "kubectl config set-context --current --namespace=${DEV_NAMESPACE}"
-                sh "kubectl get pods -n ${DEV_NAMESPACE}"
-                sh "kubectl get svc -n ${DEV_NAMESPACE}"
-                sh "minikube service nginx-service -n ${DEV_NAMESPACE} --url"
+                    if (result != 0) {
+                        error "Security scan failed: HIGH or CRITICAL vulnerabilities found in ${IMAGE_NAME}"
+                    } else {
+                        echo "Security scan passed: No HIGH or CRITICAL vulnerabilities found."
+                    }
+                }
             }
-        }
-
-        stage('Deploy to PROD') {
-            steps {
-                echo "Deploying to PROD namespace..."
-                sh "kubectl apply -f nginx-configmap.yaml -n ${PROD_NAMESPACE}"
-                sh "kubectl apply -f nginx-service.yaml -n ${PROD_NAMESPACE}"
-                sh "kubectl apply -f nginx-deployment.yaml -n ${PROD_NAMESPACE}"
-                sh "kubectl config set-context --current --namespace=${PROD_NAMESPACE}"
-                sh "kubectl get pods -n ${PROD_NAMESPACE}"
-                sh "kubectl get svc -n ${PROD_NAMESPACE}"
-                sh "minikube service nginx-service -n ${PROD_NAMESPACE} --url"
-            }
-        }
-
-        stage('Rolling Update DEV') {
-            steps {
-                echo "Updating nginx image in DEV deployment..."
-                sh "kubectl set image deployment/${DEPLOYMENT_NAME} nginx=${IMAGE_NAME} -n ${DEV_NAMESPACE}"
-                sh "kubectl get pods -n ${DEV_NAMESPACE}"
-            }
-        }
-
-        stage('Git Commit & Push') {
-            steps {
-                echo "Initializing Git and pushing changes..."
-                sh 'git init || echo "Already initialized"'
-                sh 'git remote remove origin || true'
-                sh "git remote add origin ${GIT_REPO}"
-                sh 'git add .'
-                sh 'git commit -m "CI/CD pipeline commit" || echo "Nothing to commit"'
-                sh "git push -u origin ${BRANCH} || echo 'Push may require authentication'"
-            }
-        }
-    }
-
-    post {
-        always {
-            echo "Pipeline finished. DEV pods:"
-            sh "kubectl get pods -n ${DEV_NAMESPACE}"
-            echo "Pipeline finished. PROD pods:"
-            sh "kubectl get pods -n ${PROD_NAMESPACE}"
-        }
-        success {
-            echo "CI/CD pipeline completed successfully!"
-        }
-        failure {
-            echo "Pipeline failed. Check logs for errors."
         }
     }
 }
