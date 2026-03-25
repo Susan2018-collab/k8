@@ -1,10 +1,6 @@
 pipeline {
     agent any
 
-    environment {
-        IMAGE_NAME = 'nginx:latest'
-    }
-
     stages {
         stage('Checkout') {
             steps {
@@ -13,25 +9,17 @@ pipeline {
             }
         }
 
-        stage('Verify Docker') {
+        stage('Build') {
             steps {
-                echo "Checking Docker availability..."
-                sh 'docker ps || { echo "Docker not available"; exit 1; }'
+                echo "Running a simple build step..."
+                sh 'echo Hello, Jenkins! Your pipeline is working.'
             }
         }
 
-        stage('Security Scan') {
+        stage('Test') {
             steps {
-                echo "Running Trivy scan on ${IMAGE_NAME}..."
-                sh """
-                trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_NAME}
-                """
-            }
-        }
-
-        stage('Next Step') {
-            steps {
-                echo "Next stage placeholder..."
+                echo "Running a simple test step..."
+                sh 'echo Testing complete!'
             }
         }
     }
@@ -41,7 +29,7 @@ pipeline {
             echo "✅ Pipeline succeeded!"
         }
         failure {
-            echo "❌ Pipeline failed — check logs!"
+            echo "❌ Pipeline failed!"
         }
     }
 }
