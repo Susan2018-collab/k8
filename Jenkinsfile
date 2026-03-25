@@ -2,36 +2,64 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'nginx:latest'  // your image to scan
+        IMAGE_NAME = 'nginx:latest'
     }
 
     stages {
+
+        // 🔹 1. Checkout Code
+        stage('Checkout') {
+            steps {
+                echo "Cloning repository..."
+                git branch: 'main', url: 'https://github.com/Susan2018-collab/k8.git'
+            }
+        }
+
+        // 🔹 2. Verify Docker
+        stage('Verify Docker') {
+            steps {
+                echo "Checking Docker availability..."
+                sh 'docker ps'
+            }
+        }
+
+        // 🔹 3. Security Scan (Trivy)
         stage('Security Scan') {
             steps {
-                echo "Scanning container image for vulnerabilities using Trivy..."
-                script {
-                    // Install Trivy if not already installed (optional for Jenkins agents)
-                    sh '''
-                    if ! command -v trivy &> /dev/null
-                    then
-                        echo "Trivy not found, installing..."
-                        brew install aquasecurity/trivy/trivy || curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-                    fi
-                    '''
+                echo "Running optimized Trivy scan..."
 
-                    // Run the security scan
-                    def result = sh(
-                        script: "trivy image --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_NAME}",
-                        returnStatus: true
-                    )
+                sh """
+                docker run --rm \
+                  -v /var/run/docker.sock:/var/run/docker.sock \
+                  -v \$HOME/.cache/trivy:/root/.cache/ \
+                  aquasec/trivy:latest image \
+                  --scanners vuln \
+                  --severity HIGH,CRITICAL \
+                  --timeout 10m \
+                  --exit-code 1 \
+                  ${IMAGE_NAME}
+                """
+            }
+        }
 
-                    if (result != 0) {
-                        error "Security scan failed: HIGH or CRITICAL vulnerabilities found in ${IMAGE_NAME}"
-                    } else {
-                        echo "Security scan passed: No HIGH or CRITICAL vulnerabilities found."
-                    }
-                }
+        // 🔹 4. Dummy Next Step (example)
+        stage('Next Step') {
+            steps {
+                echo "Security scan passed. Ready for deployment..."
             }
         }
     }
+
+    post {
+        success {
+            echo "✅ Security scan passed — pipeline continues"
+        }
+        failure {
+            echo "❌ Security scan failed — vulnerabilities detected"
+        }
+        always {
+            echo "Pipeline execution completed"
+        }
+    }
 }
+
