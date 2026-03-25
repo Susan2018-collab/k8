@@ -1,21 +1,35 @@
 pipeline {
     agent any
 
+    environment {
+        // You can define any additional environment variables here
+    }
+
     stages {
-        stage('Scale nginx deployment in DEV') {
+        stage('Scale Nginx in DEV') {
             steps {
+                echo "Scaling Nginx deployment in DEV namespace..."
                 withCredentials([file(credentialsId: 'kubeconfig-id', variable: 'KUBECONFIG')]) {
-                    echo 'Scaling nginx deployment in DEV namespace to 2 replicas...'
-                    sh 'kubectl scale deployment nginx-deployment --replicas=2 -n dev'
+                    // Scale DEV deployment to 2 replicas
+                    sh '''
+                        kubectl get deployment nginx-deployment -n dev
+                        kubectl scale deployment nginx-deployment --replicas=2 -n dev
+                        kubectl get deployment nginx-deployment -n dev
+                    '''
                 }
             }
         }
 
-        stage('Scale nginx deployment in PROD') {
+        stage('Scale Nginx in PROD') {
             steps {
+                echo "Scaling Nginx deployment in PROD namespace..."
                 withCredentials([file(credentialsId: 'kubeconfig-id', variable: 'KUBECONFIG')]) {
-                    echo 'Scaling nginx deployment in PROD namespace to 2 replicas...'
-                    sh 'kubectl scale deployment nginx-deployment-prod --replicas=2 -n prod'
+                    // Scale PROD deployment to 3 replicas
+                    sh '''
+                        kubectl get deployment nginx-deployment-prod -n prod
+                        kubectl scale deployment nginx-deployment-prod --replicas=3 -n prod
+                        kubectl get deployment nginx-deployment-prod -n prod
+                    '''
                 }
             }
         }
@@ -23,10 +37,10 @@ pipeline {
 
     post {
         success {
-            echo '✅ Scaling completed successfully!'
+            echo "✅ Scaling completed successfully for DEV and PROD!"
         }
         failure {
-            echo '❌ Scaling failed. Please check the logs.'
+            echo "❌ Scaling failed. Check Jenkins logs for details."
         }
     }
 }
