@@ -12,7 +12,7 @@ pipeline {
         stage('Setup Kubeconfig') {
             steps {
                 // 'kubeconfig-base64' is your Jenkins string secret ID
-                withCredentials([string(credentialsId: 'kubeconfig-id', variable: 'KUBECONFIG_B64')]) {
+                withCredentials([string(credentialsId: 'kubeconfig-base64', variable: 'KUBECONFIG_B64')]) {
                     sh '''
                         echo "$KUBECONFIG_B64" | base64 --decode > $KUBECONFIG_FILE
                         kubectl --kubeconfig=$KUBECONFIG_FILE config view
