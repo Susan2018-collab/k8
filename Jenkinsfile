@@ -42,7 +42,7 @@ pipeline {
                 echo "Testing..."
 
                 sh '''
-                python3 phon.py --name ${NAME}
+                python3 python.py --name ${NAME}
                 echo "Tests passed"
                 '''
             }
