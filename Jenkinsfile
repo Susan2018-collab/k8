@@ -29,6 +29,8 @@ pipeline {
                 echo "Running Python build..."
 
                 sh '''
+                apt-get update
+                apt-get install -y python3
                 python3 --version
                 python3 python.py --name ${NAME}
                 '''
