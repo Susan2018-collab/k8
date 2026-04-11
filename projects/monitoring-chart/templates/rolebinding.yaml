@@ -1,0 +1,11 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monitor-binding
+subjects:
+- kind: ServiceAccount
+  name: monitor-sa
+roleRef:
+  kind: Role
+  name: monitor-role
+  apiGroup: rbac.authorization.k8s.io
