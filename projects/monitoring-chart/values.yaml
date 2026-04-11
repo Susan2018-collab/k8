@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: your-dockerhub/monitor-app
+  repository: monitor-app
   tag: latest
 
 service:
