@@ -1,5 +1,3 @@
-
-
 GitOps-Based Kubernetes Self-Healing System
 Project Overview
 This project demonstrates a production-grade DevOps architecture that combines GitOps, Kubernetes, monitoring, and automated self-healing.
@@ -126,11 +124,17 @@ Observe
 -  Fully automated CI/CD-ready architecture
 
 Screenshots
-* Argo CD dashboard
-* Kubernetes pods running
-* Self-healing in action
-* Application UI
+### Argo CD Dashboard
+![ArgoCD](screenshots/argocd.png)
 
+### Kubernetes Pods
+![Pods](screenshots/pods.png)
+
+### Self-Healing Demo
+![Self Healing](screenshots/self-healing.png)
+
+### Application UI
+![App UI](screenshots/app-ui.png)
 
  👤 Author
 Susan Daniel DevOps Engineer 
