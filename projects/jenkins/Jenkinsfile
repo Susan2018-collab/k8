@@ -1,10 +1,61 @@
 pipeline {
     agent any
 
+    environment {
+        TAG = "v1.${BUILD_NUMBER}"
+        IMAGE_NAME = "monitoring-app"
+    }
+
     stages {
 
-        stage('Build Image') {
+        stage('Checkout Code') {
             steps {
-                sh 'docker build -t monitoring-app:v1.${BUILD_NUMBER} ./monitoring-app'
+                checkout scm
             }
         }
+
+        stage('Build Monitoring App Image') {
+            steps {
+                sh """
+                docker build -t ${IMAGE_NAME}:${TAG} projects/monitoring-app
+                """
+            }
+        }
+
+        stage('Update NGINX Helm Chart (GitOps Trigger)') {
+            steps {
+                sh """
+                sed -i '' 's|tag:.*|tag: ${TAG}|' projects/nginx-chart/values.yaml
+
+                git config user.email "jenkins@devops.com"
+                git config user.name "jenkins"
+
+                git add projects/nginx-chart/values.yaml
+                git commit -m "Update nginx image tag to ${TAG}" || true
+                git push origin main
+                """
+            }
+        }
+
+        stage('Update Monitoring Chart (optional)') {
+            steps {
+                sh """
+                sed -i '' 's|tag:.*|tag: ${TAG}|' projects/monitoring-chart/values.yaml || true
+
+                git add projects/monitoring-chart/values.yaml || true
+                git commit -m "Update monitoring tag ${TAG}" || true
+                git push origin main || true
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "CI pipeline completed successfully "
+        }
+        failure {
+            echo "Pipeline failed "
+        }
+    }
+}
