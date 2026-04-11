@@ -2,4 +2,4 @@ replicaCount: 1
 
 image:
   repository: nginx
-  tag: v1.9
+  tag: v1.10
