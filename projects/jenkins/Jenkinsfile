@@ -1,57 +1,10 @@
 pipeline {
     agent any
 
-    environment {
-        TAG = "v1.${BUILD_NUMBER}"
-        IMAGE_NAME = "monitoring-app"
-    }
-
     stages {
 
-
-        stage('Build Monitoring App Image') {
+        stage('Build Image') {
             steps {
-                sh """
-                eval \$(minikube docker-env)
-                docker build -t ${IMAGE_NAME}:${TAG} ./monitoring-app
-                """
+                sh 'docker build -t monitoring-app:v1.${BUILD_NUMBER} ./monitoring-app'
             }
         }
-
-        stage('Update NGINX Helm Chart (GitOps trigger)') {
-            steps {
-                sh """
-                sed -i 's|tag:.*|tag: ${TAG}|' nginx-chart/values.yaml
-
-                git config user.email "jenkins@devops.com"
-                git config user.name "jenkins"
-
-                git add nginx-chart/values.yaml
-                git commit -m "Updated nginx image tag to ${TAG}"
-                git push origin main
-                """
-            }
-        }
-
-        stage('Update Monitoring Chart (optional)') {
-            steps {
-                sh """
-                sed -i 's|tag:.*|tag: ${TAG}|' monitoring-chart/values.yaml || true
-
-                git add monitoring-chart/values.yaml || true
-                git commit -m "Updated monitoring app tag ${TAG}" || true
-                git push origin main || true
-                """
-            }
-        }
-    }
-
-    post {
-        success {
-            echo "Pipeline completed successfully "
-        }
-        failure {
-            echo "Pipeline failed "
-        }
-    }
-}
