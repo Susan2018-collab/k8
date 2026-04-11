@@ -2,8 +2,9 @@ pipeline {
     agent any
 
     environment {
-        TAG = "v1.${BUILD_NUMBER}"
         IMAGE_NAME = "monitoring-app"
+        TAG = "v1.${BUILD_NUMBER}"
+        REGISTRY = "docker.io/library"
     }
 
     stages {
@@ -14,37 +15,31 @@ pipeline {
             }
         }
 
-        stage('Build Monitoring App Image') {
+        stage('Build Docker Image') {
             steps {
                 sh """
-                docker build -t ${IMAGE_NAME}:${TAG} projects/monitoring-app
+                    docker build -t ${IMAGE_NAME}:${TAG} projects/monitoring-app
                 """
             }
         }
 
-        stage('Update NGINX Helm Chart (GitOps Trigger)') {
+        stage('Update Helm Chart') {
             steps {
                 sh """
-                sed -i '' 's|tag:.*|tag: ${TAG}|' projects/nginx-chart/values.yaml
-
-                git config user.email "jenkins@devops.com"
-                git config user.name "jenkins"
-
-                git add projects/nginx-chart/values.yaml
-                git commit -m "Update nginx image tag to ${TAG}" || true
-                git push origin main
+                    sed -i 's/tag:.*/tag: ${TAG}/g' projects/nginx-chart/values.yaml
                 """
             }
         }
 
-        stage('Update Monitoring Chart (optional)') {
+        stage('Commit & Push Changes (GitOps)') {
             steps {
                 sh """
-                sed -i '' 's|tag:.*|tag: ${TAG}|' projects/monitoring-chart/values.yaml || true
+                    git config user.email "jenkins@example.com"
+                    git config user.name "jenkins"
 
-                git add projects/monitoring-chart/values.yaml || true
-                git commit -m "Update monitoring tag ${TAG}" || true
-                git push origin main || true
+                    git add projects/nginx-chart/values.yaml
+                    git commit -m "Updated image tag to ${TAG}" || echo "No changes to commit"
+                    git push https://github.com/Susan2018-collab/k8.git HEAD:main
                 """
             }
         }
@@ -52,10 +47,10 @@ pipeline {
 
     post {
         success {
-            echo "CI pipeline completed successfully "
+            echo "Pipeline SUCCESS"
         }
         failure {
-            echo "Pipeline failed "
+            echo "Pipeline FAILED"
         }
     }
 }
