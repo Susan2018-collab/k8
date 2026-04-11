@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   repository: monitor-app
   tag: latest
+  pullPolicy: Never
 
 service:
   type: NodePort
