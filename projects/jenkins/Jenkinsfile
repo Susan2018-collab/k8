@@ -4,7 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = "monitoring-app"
         TAG = "v1.${BUILD_NUMBER}"
-        REGISTRY = "docker.io/library"
+        REPO = "Susan2018-collab/k8"
     }
 
     stages {
@@ -26,21 +26,28 @@ pipeline {
         stage('Update Helm Chart') {
             steps {
                 sh """
-                    sed -i 's/tag:.*/tag: ${TAG}/g' projects/nginx-chart/values.yaml
+                    sed -i 's|tag:.*|tag: ${TAG}|g' projects/nginx-chart/values.yaml
                 """
             }
         }
 
-        stage('Commit & Push Changes (GitOps)') {
+        stage('Commit & Push Changes') {
             steps {
-                sh """
-                    git config user.email "jenkins@example.com"
-                    git config user.name "jenkins"
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-creds',
+                    usernameVariable: 'GIT_USERNAME',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh """
+                        git config user.email "jenkins@example.com"
+                        git config user.name "jenkins"
 
-                    git add projects/nginx-chart/values.yaml
-                    git commit -m "Updated image tag to ${TAG}" || echo "No changes to commit"
-                    git push https://github.com/Susan2018-collab/k8.git HEAD:main
-                """
+                        git add projects/nginx-chart/values.yaml
+                        git commit -m "Update image tag to ${TAG}" || true
+
+                        git push https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/${REPO}.git HEAD:main
+                    """
+                }
             }
         }
     }
