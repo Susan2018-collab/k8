@@ -6,55 +6,55 @@ pipeline {
     }
 
     triggers {
-        cron('H/10 * * * *')   
+        cron('H/10 * * * *')
     }
 
     environment {
         ANSIBLE_DIR = "infrastructure/ansible"
+        PATCH_FOUND = "false"
     }
 
     stages {
 
-        # 1. SECURITY SCAN
+        // 1. SECURITY SCAN
         stage('Scan for Security Updates') {
             steps {
                 script {
-                    sh """
-                    ansible-playbook \
-                    -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                    ${ANSIBLE_DIR}/scan.yml \
-                    --extra-vars "email_to=${params.EMAIL_TO}"
-                    """
+                    def scanOutput = sh(
+                        script: """
+                        ansible-playbook \
+                        -i ${ANSIBLE_DIR}/inventory/hosts.ini \
+                        ${ANSIBLE_DIR}/scan.yml
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "${scanOutput}"
+
+                    // SIMPLE DETECTION LOGIC (replace later with real parsing)
+                    if (scanOutput.contains("changed") || scanOutput.contains("upgraded")) {
+                        env.PATCH_FOUND = "true"
+                    } else {
+                        env.PATCH_FOUND = "false"
+                    }
                 }
             }
         }
 
-        # 2. CHECK IF PATCHES EXIST
-        stage('Evaluate Patch Requirement') {
-            steps {
-                script {
-                    echo "Checking if patches exist..."
-
-                    // simple placeholder logic (replace with real scan output later)
-                    env.PATCH_FOUND = "true"
-                }
-            }
-        }
-
-        # 3. EMAIL IF PATCH FOUND
+        // 2. NOTIFY IF PATCH FOUND
         stage('Notify Patch Found') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 sh """
-                echo "Patches detected on servers. Starting TEST remediation." | \
-                mail -s "PATCH ALERT - Test Environment" ${params.EMAIL_TO}
+                echo "Patches detected. Starting test environment remediation." | \
+                mail -s "PATCH ALERT - TEST ENV" ${params.EMAIL_TO}
                 """
             }
         }
 
-        # 4. PATCH TEST ENVIRONMENT
+        // 3. PATCH TEST ENVIRONMENT
         stage('Patch Test Environment') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -69,19 +69,17 @@ pipeline {
             }
         }
 
-        # 5. TEST VALIDATION
+        // 4. VALIDATE TEST
         stage('Validate Test Environment') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                sh """
-                echo "Running health checks on TEST environment"
-                """
+                sh "echo 'Running health checks on TEST environment'"
             }
         }
 
-        # 6. TEST SUCCESS EMAIL
+        // 5. TEST SUCCESS EMAIL
         stage('Test Success Notification') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -94,7 +92,7 @@ pipeline {
             }
         }
 
-        # 7. APPROVAL GATE
+        // 6. APPROVAL GATE
         stage('Approval for Production') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -104,7 +102,7 @@ pipeline {
             }
         }
 
-        # 8. PATCH PRODUCTION
+        // 7. PATCH PROD
         stage('Patch Production') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -119,7 +117,7 @@ pipeline {
             }
         }
 
-        # 9. FINAL EMAIL
+        // 8. FINAL EMAIL
         stage('Final Notification') {
             steps {
                 sh """
