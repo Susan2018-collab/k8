@@ -29,8 +29,6 @@ The system follows a GitOps workflow where Git acts as the single source of trut
 <img width="3976" height="512" alt="mermaid-diagram (2)" src="https://github.com/user-attachments/assets/26f970f9-3602-4c01-95b0-ea94a45f5d91" />
 
 
-![Deployment Diagram](docs/deployment.png)
-
 ### CI/CD Flow:
 1. Developer pushes code to GitHub
 2. Jenkins pipeline is triggered
