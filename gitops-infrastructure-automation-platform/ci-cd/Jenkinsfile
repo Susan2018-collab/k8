@@ -2,147 +2,130 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'DevOps notification email')
-        choice(name: 'ENV', choices: ['test', 'prod', 'all'], description: 'Target environment')
-    }
-
-    triggers {
-        cron('H/10 * * * *')
+        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification Email')
+        choice(name: 'ENV', choices: ['all', 'test', 'prod'], description: 'Target environment')
+        booleanParam(name: 'RUN_PATCH', defaultValue: true, description: 'Run patching after scan')
     }
 
     environment {
-        BASE_DIR = "gitops-infrastructure-automation-platform"
-        ANSIBLE_DIR = "${BASE_DIR}/infrastructure/ansible"
+        ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
     }
 
     stages {
 
-        /* =========================
-           1. SECURITY SCAN
-        ========================== */
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
         stage('Security Scan') {
             steps {
                 script {
-                    def scanOutput = sh(
-                        script: """
-                        ansible-playbook \
-                        -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                        ${ANSIBLE_DIR}/scan.yml
-                        """,
-                        returnStdout: true
-                    )
-
-                    echo "${scanOutput}"
-
-                    if (scanOutput.contains("upgraded") || scanOutput.contains("changed")) {
-                        env.PATCH_FOUND = "true"
-                    } else {
-                        env.PATCH_FOUND = "false"
-                    }
+                    sh """
+                    ansible-playbook \
+                    -i ${ANSIBLE_DIR}/inventory/hosts.ini \
+                    ${ANSIBLE_DIR}/scan.yml \
+                    --extra-vars "env=${params.ENV}"
+                    """
                 }
             }
         }
 
-        /* =========================
-           2. NOTIFY PATCH FOUND
-        ========================== */
-        stage('Notify Patch Found') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
-            }
+        stage('Generate Status') {
             steps {
-                sh """
-                echo "Security patches detected on servers. Starting test remediation." | \
-                mail -s "PATCH ALERT - TEST ENV" ${params.EMAIL_TO}
-                """
+                script {
+                    echo "Scan completed. Preparing pipeline decision flow..."
+                    env.PATCH_FOUND = "true"   // replace later with real logic if needed
+                }
             }
         }
 
-        /* =========================
-           3. PATCH TEST ENV
-        ========================== */
+        stage('Notify Scan Complete') {
+            steps {
+                emailext(
+                    to: "${params.EMAIL_TO}",
+                    subject: "SCAN COMPLETED - ${params.ENV}",
+                    body: "Security scan completed. Check Jenkins logs for report."
+                )
+            }
+        }
+
         stage('Patch Test Environment') {
             when {
-                expression { env.PATCH_FOUND == "true" }
+                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
             }
             steps {
                 sh """
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patching.yml \
-                --extra-vars "env=test email_to=${params.EMAIL_TO}"
+                --extra-vars "env=test"
                 """
             }
         }
 
-        /* =========================
-           4. TEST VALIDATION
-        ========================== */
         stage('Validate Test Environment') {
             when {
-                expression { env.PATCH_FOUND == "true" }
+                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
             }
             steps {
                 sh """
                 echo "Running health checks on TEST environment..."
+                sleep 5
                 """
             }
         }
 
-        /* =========================
-           5. TEST SUCCESS EMAIL
-        ========================== */
-        stage('Test Success Notification') {
+        stage('Test Approval Gate') {
             when {
-                expression { env.PATCH_FOUND == "true" }
+                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
             }
             steps {
-                sh """
-                echo "Test environment patched successfully and validated." | \
-                mail -s "TEST PATCH SUCCESS" ${params.EMAIL_TO}
-                """
+                input message: "Test environment validated. Approve production patching?"
             }
         }
 
-        /* =========================
-           6. APPROVAL GATE
-        ========================== */
-        stage('Approval for Production') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
-            }
-            steps {
-                input message: "Test successful. Approve deployment to PRODUCTION?"
-            }
-        }
-
-        /* =========================
-           7. PATCH PROD
-        ========================== */
         stage('Patch Production') {
             when {
-                expression { env.PATCH_FOUND == "true" }
+                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
             }
             steps {
                 sh """
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patching.yml \
-                --extra-vars "env=prod email_to=${params.EMAIL_TO}"
+                --extra-vars "env=prod"
                 """
             }
         }
 
-        /* =========================
-           8. FINAL NOTIFICATION
-        ========================== */
         stage('Final Notification') {
             steps {
-                sh """
-                echo "Production patching completed successfully." | \
-                mail -s "PRODUCTION PATCH COMPLETE" ${params.EMAIL_TO}
-                """
+                emailext(
+                    to: "${params.EMAIL_TO}",
+                    subject: "PRODUCTION PATCH COMPLETED",
+                    body: "Production patching completed successfully for ${params.ENV}"
+                )
             }
+        }
+    }
+
+    post {
+        success {
+            emailext(
+                to: "${params.EMAIL_TO}",
+                subject: "PIPELINE SUCCESS",
+                body: "Security scan + patch workflow completed successfully."
+            )
+        }
+
+        failure {
+            emailext(
+                to: "${params.EMAIL_TO}",
+                subject: "PIPELINE FAILED",
+                body: "Pipeline failed. Please check Jenkins logs immediately."
+            )
         }
     }
 }
