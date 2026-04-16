@@ -72,22 +72,70 @@ The monitoring application continuously checks system health:
 - Provides health check API
 - Triggers GitOps-based recovery workflow
 
+## ⚙️ Implementation Steps
+
+### 1. Kubernetes Cluster Setup
+- Initialized local Kubernetes cluster using Minikube
+- Verified node readiness using kubectl
+
+### 2. Argo CD Installation (GitOps Layer)
+- Created `argocd` namespace
+- Installed Argo CD using official manifest
+- Exposed Argo CD server using NodePort / port-forward
+- Configured initial admin credentials
+
+### 3. Application Deployment (Helm-based)
+- Created Helm charts for:
+  - Nginx application
+  - Monitoring application
+- Defined deployment, service, and configuration templates
+
+### 4. CI/CD Pipeline Setup (Jenkins)
+- Configured Jenkins in Docker container
+- Installed required plugins (Docker, Git, Pipeline)
+- Created Jenkins pipeline to:
+  - Build Docker image
+  - Update Helm chart image tag
+  - Commit changes back to GitHub
+
+### 5. GitOps Workflow Integration
+- Connected GitHub repository to Argo CD
+- Configured Argo CD Application to track:
+  - `projects/monitoring-chart`
+  - `projects/nginx-chart`
+- Enabled automated sync and self-healing
+
+### 6. Deployment Flow Validation
+- Triggered Jenkins pipeline via code commit
+- Verified Docker image build
+- Confirmed Helm chart update in Git
+- Observed Argo CD auto-sync
+- Verified Kubernetes pod rollout
+
+### 7. Monitoring & Self-Healing Validation
+- Deployed monitoring application (Flask-based)
+- Exposed health check endpoint
+- Simulated failure scenario
+- Verified automatic reconciliation via GitOps loop
 
 ## 📸 Screenshots
 
 ### 1. Argo CD UI
-![ArgoCD UI](docs/screenshots/argocd.png)
+<img width="3456" height="1908" alt="image" src="https://github.com/user-attachments/assets/c4af0c07-f5e3-445a-8741-9f37bec0a58b" />
+<img width="1728" height="954" alt="+ orpo" src="https://github.com/user-attachments/assets/a071b4f0-aa3f-49da-91fb-0e7ed2afddd3" />
+<img width="1728" height="954" alt="Pasted Graphic 18" src="https://github.com/user-attachments/assets/61fd58c0-16cd-4709-a9f6-90032f4955a3" />
 
 ### 2. Jenkins Pipeline
-![Jenkins Pipeline](docs/screenshots/jenkins.png)
+<img width="1713" height="952" alt="Pasted Graphic 29" src="https://github.com/user-attachments/assets/6f3a2a10-e58c-458a-a16e-b3ec3d861ac3" />
+<img width="1713" height="952" alt="Pasted Graphic 1" src="https://github.com/user-attachments/assets/02e8a0e8-9023-444b-ae75-469ee9b53183" />
 
 ### 3. Kubernetes Pods
-![K8s Pods](docs/screenshots/k8s-pods.png)
+<img width="980" height="89" alt="Pasted Graphic 20" src="https://github.com/user-attachments/assets/31c00d8b-e149-4b12-9bfa-235ee857f66e" />
+<img width="980" height="123" alt="Pasted Graphic 21" src="https://github.com/user-attachments/assets/56143223-7353-456d-89b8-20419928863d" />
+<img width="1728" height="909" alt="Pasted Graphic 24" src="https://github.com/user-attachments/assets/fae53b42-9eb7-4d57-951f-c6012a7f2d6a" />
 
 ### 4. Application UI
-![App UI](docs/screenshots/app.png)
-
----
+<img width="1447" height="716" alt="Pasted Graphic 23" src="https://github.com/user-attachments/assets/24dcb5c2-8160-4780-9211-a8c92fe7ce6e" />
 
 ## ⚙️ Tech Stack
 
@@ -99,8 +147,6 @@ The monitoring application continuously checks system health:
 - Python Flask
 - GitHub (GitOps)
 
----
-
 ## 📊 Key Features
 
 - GitOps-based deployment pipeline
@@ -109,7 +155,6 @@ The monitoring application continuously checks system health:
 - Helm-based Kubernetes deployments
 - Continuous reconciliation using Argo CD
 
----
 
 ## 🔮 Future Improvements
 
@@ -119,8 +164,7 @@ The monitoring application continuously checks system health:
 - Canary deployments
 - RBAC + policy enforcement
 
----
 
 ## 👨‍💻 Author
-
-DevOps / Platform Engineering Project demonstrating GitOps, CI/CD automation, and Kubernetes self-healing architecture.
+Susan Daniel
+DevOps Engineer
