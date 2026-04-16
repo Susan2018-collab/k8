@@ -2,13 +2,17 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification Email')
-        choice(name: 'ENV', choices: ['all', 'test', 'prod'], description: 'Target environment')
-        booleanParam(name: 'RUN_PATCH', defaultValue: true, description: 'Run patching after scan')
+        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification email')
+        choice(name: 'ENV', choices: ['test', 'prod', 'all'], description: 'Target environment')
+    }
+
+    triggers {
+        cron('H/10 * * * *')
     }
 
     environment {
         ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
+        REPORT_FILE = "scan_report.txt"
     }
 
     stages {
@@ -19,47 +23,46 @@ pipeline {
             }
         }
 
-        stage('Security Scan') {
+        stage('Security Scan (Ansible)') {
             steps {
                 script {
                     sh """
                     ansible-playbook \
                     -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                     ${ANSIBLE_DIR}/scan.yml \
-                    --extra-vars "env=${params.ENV}"
+                    --extra-vars "env=${params.ENV} email_to=${params.EMAIL_TO}"
                     """
                 }
             }
         }
 
-        stage('Generate Status') {
+        stage('Evaluate Scan Result') {
             steps {
                 script {
-                    echo "Scan completed. Preparing pipeline decision flow..."
-                    env.PATCH_FOUND = "true"   // replace later with real logic if needed
+                    // simple placeholder (replace later with real parsing logic)
+                    env.PATCH_FOUND = "true"
                 }
             }
         }
 
-        stage('Notify Scan Complete') {
+        stage('Notify - Patch Found') {
+            when {
+                expression { env.PATCH_FOUND == "true" }
+            }
             steps {
-                emailext(
-                    to: "${params.EMAIL_TO}",
-                    subject: "SCAN COMPLETED - ${params.ENV}",
-                    body: "Security scan completed. Check Jenkins logs for report."
-                )
+                echo "Patches detected, starting remediation pipeline"
             }
         }
 
         stage('Patch Test Environment') {
             when {
-                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
+                expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 sh """
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                ${ANSIBLE_DIR}/patching.yml \
+                ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=test"
                 """
             }
@@ -67,46 +70,46 @@ pipeline {
 
         stage('Validate Test Environment') {
             when {
-                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
+                expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                sh """
-                echo "Running health checks on TEST environment..."
-                sleep 5
-                """
+                sh "echo 'Running health checks on TEST environment'"
             }
         }
 
-        stage('Test Approval Gate') {
+        stage('Test Success Email') {
             when {
-                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
+                expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                input message: "Test environment validated. Approve production patching?"
+                emailext(
+                    to: "${params.EMAIL_TO}",
+                    subject: "TEST PATCH SUCCESS",
+                    body: "Test environment patched and validated successfully."
+                )
+            }
+        }
+
+        stage('Approval for Production') {
+            when {
+                expression { env.PATCH_FOUND == "true" }
+            }
+            steps {
+                input message: "TEST is successful. Approve deployment to PRODUCTION?"
             }
         }
 
         stage('Patch Production') {
             when {
-                expression { env.PATCH_FOUND == "true" && params.RUN_PATCH }
+                expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 sh """
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                ${ANSIBLE_DIR}/patching.yml \
+                ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=prod"
                 """
-            }
-        }
-
-        stage('Final Notification') {
-            steps {
-                emailext(
-                    to: "${params.EMAIL_TO}",
-                    subject: "PRODUCTION PATCH COMPLETED",
-                    body: "Production patching completed successfully for ${params.ENV}"
-                )
             }
         }
     }
@@ -115,16 +118,16 @@ pipeline {
         success {
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "PIPELINE SUCCESS",
-                body: "Security scan + patch workflow completed successfully."
+                subject: "DAILY SECURITY SCAN SUCCESS",
+                body: "Pipeline completed successfully. Check Jenkins for details."
             )
         }
 
         failure {
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "PIPELINE FAILED",
-                body: "Pipeline failed. Please check Jenkins logs immediately."
+                subject: "DAILY SECURITY SCAN FAILED",
+                body: "Pipeline failed. Please check Jenkins logs."
             )
         }
     }
