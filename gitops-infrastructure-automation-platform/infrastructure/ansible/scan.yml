@@ -3,50 +3,59 @@
   gather_facts: no
 
   tasks:
-    # ENV FILTER (TEST / PROD / ALL)
 
+    # =========================
+    # ENV FILTER
+    # =========================
     - name: Skip based on environment
       meta: end_host
-      when: env != "all" and inventory_hostname not in groups[env]
+      when: env is defined and env != "all" and inventory_hostname not in groups[env]
 
-    # UPDATE PACKAGE DATA
+    # =========================
+    # DEBIAN SCAN
+    # =========================
     - name: Update package metadata (Debian/Ubuntu)
       delegate_to: localhost
       shell: docker exec {{ inventory_hostname }} apt-get update
+      ignore_errors: yes
 
-    # SCAN FOR UPGRADABLE PACKAGES (DEBIAN)
-    - name: List upgradable packages (security exposure check)
+    - name: List upgradable packages (Debian)
       delegate_to: localhost
       shell: docker exec {{ inventory_hostname }} apt list --upgradable
       register: debian_scan
       ignore_errors: yes
 
-    # RHEL SECURITY SCAN (FUTURE READY)
-    - name: RHEL security scan (dnf/yum)
+    # =========================
+    # RHEL SCAN
+    # =========================
+    - name: RHEL security scan
       delegate_to: localhost
       shell: docker exec {{ inventory_hostname }} bash -c "dnf updateinfo list security || yum updateinfo list security"
       register: rhel_scan
       ignore_errors: yes
 
-    # GENERATE REPORT
+    # =========================
+    # CREATE REPORT
+    # =========================
     - name: Create scan report file
       delegate_to: localhost
       copy:
         dest: "/tmp/scan_{{ inventory_hostname }}.txt"
         content: |
+          ==============================
           Host: {{ inventory_hostname }}
-          Environment: {{ env }}
-          Scan Mode: {{ scan_mode }}
+          Environment: {{ env | default('unknown') }}
+          ==============================
 
           -------- DEBIAN UPDATES --------
           {{ debian_scan.stdout | default('No Debian updates found') }}
 
           -------- RHEL SECURITY UPDATES --------
-          {{ rhel_scan.stdout | default('No RHEL updates or not applicable') }}
+          {{ rhel_scan.stdout | default('No RHEL updates found') }}
 
-
+    # =========================
     # READ REPORT
-
+    # =========================
     - name: Load final report
       delegate_to: localhost
       shell: cat /tmp/scan_{{ inventory_hostname }}.txt
@@ -56,7 +65,10 @@
       set_fact:
         report: "{{ report_output.stdout }}"
 
-    # EMAIL NOTIFICATION 
+    # =========================
+    # EMAIL NOTIFICATION (FIXED)
+    # =========================
+    - name: Send email report
       delegate_to: localhost
       shell: |
-        echo "{{ report }}" | mail -s "DAILY SECURITY SCAN - {{ inventory_hostname }} ({{ env }})" {{ email_to }}
+        echo "{{ report }}" | mail -s "DAILY SECURITY SCAN - {{ inventory_hostname }} ({{ env | default('all') }})" {{ email_to }}
