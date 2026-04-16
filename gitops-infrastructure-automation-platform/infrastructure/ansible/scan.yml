@@ -1,6 +1,12 @@
+---
 - name: Enterprise Daily Vulnerability Scan
   hosts: all
-  gather_facts: no
+  become: yes
+  gather_facts: yes
+
+  vars:
+    scan_mode: "daily"
+    email_to: "susan.joffin@gmail.com"
 
   tasks:
 
@@ -12,61 +18,80 @@
       when: env is defined and env != "all" and inventory_hostname not in groups[env]
 
     # =========================
-    # DEBIAN SCAN
+    # FACT SAFETY (MODERN STYLE)
     # =========================
-    - name: Update package metadata (Debian/Ubuntu)
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} apt-get update
-      ignore_errors: yes
+    - name: Set OS family fact
+      set_fact:
+        os_family: "{{ ansible_facts['os_family'] }}"
+
+    # =========================
+    # DEBIAN / UBUNTU SCAN
+    # =========================
+    - name: Update package metadata (Debian)
+      apt:
+        update_cache: yes
+      when: os_family == "Debian"
 
     - name: List upgradable packages (Debian)
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} apt list --upgradable
+      shell: apt list --upgradable
       register: debian_scan
+      changed_when: false
       ignore_errors: yes
+      when: os_family == "Debian"
 
     # =========================
-    # RHEL SCAN
+    # RHEL / CENTOS SCAN
     # =========================
-    - name: RHEL security scan
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} bash -c "dnf updateinfo list security || yum updateinfo list security"
+    - name: RHEL security scan (safe execution)
+      shell: |
+        if command -v dnf >/dev/null 2>&1; then
+          dnf updateinfo list security
+        elif command -v yum >/dev/null 2>&1; then
+          yum updateinfo list security
+        else
+          echo "No RHEL package manager found"
+        fi
       register: rhel_scan
+      changed_when: false
       ignore_errors: yes
+      when: os_family == "RedHat"
 
     # =========================
-    # CREATE REPORT
+    # REPORT GENERATION
     # =========================
-    - name: Create scan report file
-      delegate_to: localhost
+    - name: Generate scan report
       copy:
         dest: "/tmp/scan_{{ inventory_hostname }}.txt"
         content: |
-          ==============================
+          ============================
+          ENTERPRISE SECURITY SCAN
+          ============================
           Host: {{ inventory_hostname }}
-          Environment: {{ env | default('unknown') }}
-          ==============================
+          OS Family: {{ os_family }}
+          OS: {{ ansible_facts['distribution'] }}
+          Environment: {{ env | default('all') }}
+          Scan Mode: {{ scan_mode }}
 
-          -------- DEBIAN UPDATES --------
-          {{ debian_scan.stdout | default('No Debian updates found') }}
+          -------- DEBIAN UPGRADES --------
+          {{ debian_scan.stdout | default('Not applicable') }}
 
-          -------- RHEL SECURITY UPDATES --------
-          {{ rhel_scan.stdout | default('No RHEL updates found') }}
+          -------- RHEL SECURITY --------
+          {{ rhel_scan.stdout | default('Not applicable') }}
 
     # =========================
     # READ REPORT
     # =========================
-    - name: Load final report
-      delegate_to: localhost
-      shell: cat /tmp/scan_{{ inventory_hostname }}.txt
-      register: report_output
+    - name: Read report
+      slurp:
+        src: "/tmp/scan_{{ inventory_hostname }}.txt"
+      register: report_file
 
     - name: Store report
       set_fact:
-        report: "{{ report_output.stdout }}"
+        report: "{{ report_file.content | b64decode }}"
 
     # =========================
-    # EMAIL NOTIFICATION (FIXED)
+    # EMAIL NOTIFICATION
     # =========================
     - name: Send email report
       delegate_to: localhost
