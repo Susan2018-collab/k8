@@ -2,7 +2,8 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification email')
+        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'DevOps notification email')
+        choice(name: 'ENV', choices: ['test', 'prod', 'all'], description: 'Target environment')
     }
 
     triggers {
@@ -10,14 +11,16 @@ pipeline {
     }
 
     environment {
-        ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
-        PATCH_FOUND = "false"
+        BASE_DIR = "gitops-infrastructure-automation-platform"
+        ANSIBLE_DIR = "${BASE_DIR}/infrastructure/ansible"
     }
 
     stages {
 
-        // 1. SECURITY SCAN
-        stage('Scan for Security Updates') {
+        /* =========================
+           1. SECURITY SCAN
+        ========================== */
+        stage('Security Scan') {
             steps {
                 script {
                     def scanOutput = sh(
@@ -27,12 +30,11 @@ pipeline {
                         ${ANSIBLE_DIR}/scan.yml
                         """,
                         returnStdout: true
-                    ).trim()
+                    )
 
                     echo "${scanOutput}"
 
-                    // SIMPLE DETECTION LOGIC (replace later with real parsing)
-                    if (scanOutput.contains("changed") || scanOutput.contains("upgraded")) {
+                    if (scanOutput.contains("upgraded") || scanOutput.contains("changed")) {
                         env.PATCH_FOUND = "true"
                     } else {
                         env.PATCH_FOUND = "false"
@@ -41,20 +43,24 @@ pipeline {
             }
         }
 
-        // 2. NOTIFY IF PATCH FOUND
+        /* =========================
+           2. NOTIFY PATCH FOUND
+        ========================== */
         stage('Notify Patch Found') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 sh """
-                echo "Patches detected. Starting test environment remediation." | \
+                echo "Security patches detected on servers. Starting test remediation." | \
                 mail -s "PATCH ALERT - TEST ENV" ${params.EMAIL_TO}
                 """
             }
         }
 
-        // 3. PATCH TEST ENVIRONMENT
+        /* =========================
+           3. PATCH TEST ENV
+        ========================== */
         stage('Patch Test Environment') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -69,40 +75,50 @@ pipeline {
             }
         }
 
-        // 4. VALIDATE TEST
+        /* =========================
+           4. TEST VALIDATION
+        ========================== */
         stage('Validate Test Environment') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                sh "echo 'Running health checks on TEST environment'"
+                sh """
+                echo "Running health checks on TEST environment..."
+                """
             }
         }
 
-        // 5. TEST SUCCESS EMAIL
+        /* =========================
+           5. TEST SUCCESS EMAIL
+        ========================== */
         stage('Test Success Notification') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 sh """
-                echo "Test environment patched and validated successfully." | \
+                echo "Test environment patched successfully and validated." | \
                 mail -s "TEST PATCH SUCCESS" ${params.EMAIL_TO}
                 """
             }
         }
 
-        // 6. APPROVAL GATE
+        /* =========================
+           6. APPROVAL GATE
+        ========================== */
         stage('Approval for Production') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                input message: "TEST successful. Approve deployment to PROD?"
+                input message: "Test successful. Approve deployment to PRODUCTION?"
             }
         }
 
-        // 7. PATCH PROD
+        /* =========================
+           7. PATCH PROD
+        ========================== */
         stage('Patch Production') {
             when {
                 expression { env.PATCH_FOUND == "true" }
@@ -117,7 +133,9 @@ pipeline {
             }
         }
 
-        // 8. FINAL EMAIL
+        /* =========================
+           8. FINAL NOTIFICATION
+        ========================== */
         stage('Final Notification') {
             steps {
                 sh """
