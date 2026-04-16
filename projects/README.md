@@ -1,140 +1,93 @@
-GitOps-Based Kubernetes Self-Healing System
-Project Overview
-This project demonstrates a production-grade DevOps architecture that combines GitOps, Kubernetes, monitoring, and automated self-healing.
-A custom Python-based monitoring service continuously checks the health of an application running in Kubernetes. If a failure is detected, it automatically triggers GitOps-based remediation by updating the Git repository, which is then reconciled by Argo CD.
+🚀 GitOps-Based Kubernetes Self-Healing Platform
 
-Architecture
-Developer → GitHub → Argo CD → Kubernetes Cluster
-                                   ↓
-                     ┌─────────────┴─────────────┐
-                     ↓                           ↓
-               Target App                  Monitoring App
-               (NGINX)                   (Python Flask)
-                     ↓                           ↓
-                Health API              Health Check Logic
-                                                ↓
-                                     Git Update (Helm values)
-                                                ↓
-                                           Argo CD Sync
-                                                ↓
-                                          Self-Healing
+A production-grade GitOps-driven Kubernetes platform enabling automated deployment, continuous reconciliation, and autonomous self-healing of cloud-native workloads using Argo CD, Jenkins CI/CD, and a custom Python monitoring engine.
 
- Tech Stack
-* CI/CD & GitOps: Argo CD, GitHub
-* Containerization: Docker
-* Orchestration: Kubernetes (Minikube)
-* Package Manager: Helm
-* Monitoring App: Python (Flask)
-* Scripting: Bash
-* Cloud/Infra Concepts: AWS, Networking, IAM
-* Security: Kubernetes RBAC
-
-Repository Structure
-devops-project/
-├── monitoring-app/      —> Python monitoring service
-├── monitoring-chart/    —> Helm chart for monitoring app
-├── nginx-chart/           —> Helm chart for target app
-├── jenkins/               —> CI pipeline (optional)
-└── README.md
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/7990a3da-fa23-4012-bcea-38ed4808d30c" />
 
 
-1. Application Deployment (GitOps)
-* All Kubernetes manifests and Helm charts are stored in GitHub
-* Argo CD continuously monitors the repository
-* Any change in Git is automatically applied to the cluster
+📌 Overview
 
-2. Monitoring System
-* A Flask-based Python application runs inside Kubernetes
-* It periodically checks the health of the target application (nginx-service)
-* Health check runs every 30 seconds
+This project implements a closed-loop infrastructure automation system where Kubernetes clusters continuously align with the desired state defined in Git.
 
-3. Failure Detection
-* If the target app is unreachable or returns an error:
-    * The monitoring service detects the failure
-    * Logs the issue
+It combines:
+- GitOps-based deployment (Argo CD)
+- CI/CD automation (Jenkins)
+- Kubernetes orchestration
+- Custom monitoring & anomaly detection (Python)
 
-4. Self-Healing Mechanism (Core Feature)
-* Instead of directly modifying the cluster, the system:
-    1. Updates Helm values in the Git repository
-    2. Commits and pushes changes
-    3. Argo CD detects the change
-    4. Automatically redeploys the application
- This ensures Git remains the single source of truth (GitOps principle)
-
- Self-Healing Flow
-App Failure → Monitoring Detects → Git Update → Argo CD Sync → App Restored
-
-Setup Instructions
-—>  Prerequisites
-* Docker
-* Kubernetes (Minikube)
-* kubectl
-* Helm
-* Argo CD
+The platform ensures that any failure, drift, or unauthorized change is automatically detected and remediated without manual intervention
 
 
-  1. Start Minikube
-minikube start 
- 2. Install Argo CD
-kubectl create namespace argocd
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+🎯 Key Features
 
- 3. Access Argo CD UI
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-Get password:
-kubectl get secret argocd-initial-admin-secret -n argocd -o yaml
-echo <password> | base64 --decode
-Open: —>  https://localhost:8080
+- 🔁 Fully automated GitOps reconciliation loop
+- 🛠️ Self-healing Kubernetes workloads
+- 📉 Drift detection and automatic rollback
+- ⚡ CI/CD pipeline with progressive delivery (Dev → Test → Prod)
+- 🧠 Custom Python-based anomaly detection engine
+- 🔒 Secure, auditable, Git-based infrastructure changes
+- 📊 Production-grade observability and health monitoring
 
- 4. Build & Push Monitoring App
-docker build -t <your-dockerhub>/monitor-app:latest ./monitoring-app
-docker push <your-dockerhub>/monitor-app:latest
 
- 5. Connect Git Repo in Argo CD
-* Go to Argo CD UI
-* Create new application
-* Select repo and path (monitoring-chart or nginx-chart)
-* Enable auto-sync
 
-6. Deploy Applications
-Argo CD will automatically deploy:
-* Target application (NGINX)
-* Monitoring application
+ 🏗️ Architecture
 
-Testing Self-Healing  Simulate Failure
-kubectl scale deployment nginx-app --replicas=0
+High-Level Flow
 
-Observe
-* Monitoring app detects failure
-* Git repository is updated
-* Argo CD syncs changes
-* Application is restored
+1. Developer commits changes to Git
+2. Jenkins pipeline validates and builds changes
+3. Argo CD syncs desired state to Kubernetes cluster
+4. Python monitoring service observes runtime health
+5. On failure or anomaly:
+   - Issue is detected automatically
+   - Git-based remediation workflow is triggered
+   - Cluster state is reconciled back to last known good version
 
- Security (RBAC)
-* Implemented Kubernetes RBAC for controlled access
-* Monitoring app uses a dedicated ServiceAccount
-* Permissions restricted to required resources only
+🔄 Self-Healing Behavior
 
- Key Features
--  GitOps-based deployment using Argo CD
--  Automated monitoring using Python
--  Self-healing via Git-driven updates
--  Helm-based Kubernetes deployments
--  RBAC-secured cluster access
--  Fully automated CI/CD-ready architecture
+The system automatically handles:
 
-Screenshots
-### Argo CD Dashboard
-![ArgoCD](screenshots/argocd.png)
+| Scenario | Automated Response |
+|----------|--------------------|
+| Pod failure | Kubernetes restarts container |
+| Node failure | Workloads rescheduled to healthy nodes |
+| Config drift | Argo CD restores desired Git state |
+| Service degradation | Monitoring triggers rollback workflow |
+| Unauthorized change | GitOps reconciliation overwrites state |
 
-### Kubernetes Pods
-![Pods](screenshots/pods.png)
 
-### Self-Healing Demo
-![Self Healing](screenshots/self-healing.png)
+ 🧩 System Components
 
-### Application UI
-![App UI](screenshots/app-ui.png)
+ Kubernetes Cluster
+- Core orchestration layer
+- Provides auto-scaling and self-healing primitives
 
- 👤 Author
-Susan Daniel DevOps Engineer 
+Argo CD (GitOps Engine)
+- Continuously syncs cluster state with Git repository
+- Ensures declarative infrastructure enforcement
+
+Jenkins CI/CD
+- Automates build, test, and deployment pipelines
+- Implements staged environment promotion
+
+Python Monitoring Service
+- Detects anomalies in real time
+- Monitors CPU, memory, pod health, and crash loops
+- Triggers remediation workflows
+Helm Charts
+- Manages reusable deployment templates
+- Supports environment-specific configurations
+
+
+📁 Repository Structure
+
+.
+├── jenkins/                  # CI/CD pipeline (Jenkinsfile)
+├── monitoring-app/          # Python monitoring & anomaly detection service
+│   ├── app.py
+│   ├── requirements.txt
+│   └── Dockerfile
+├── monitoring-chart/        # Helm chart for deployment
+├── k8s-manifests/           # Kubernetes manifests (dev/test/prod)
+├── argocd/                  # Argo CD application definitions
+└── docs/                   # Architecture and runbooks
