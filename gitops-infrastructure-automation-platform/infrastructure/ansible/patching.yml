@@ -1,0 +1,48 @@
+- name: Patch, Validate, and Notify Docker Mail Servers
+  hosts: all
+  gather_facts: no
+
+  tasks:
+
+    - name: Update package list
+      delegate_to: localhost
+      shell: docker exec {{ inventory_hostname }} apt-get update
+
+    - name: Upgrade all packages
+      delegate_to: localhost
+      shell: docker exec {{ inventory_hostname }} apt-get upgrade -y
+
+    - name: Restart container (simulate reboot)
+      delegate_to: localhost
+      shell: docker restart {{ inventory_hostname }}
+
+    - name: Wait for container restart
+      delegate_to: localhost
+      shell: sleep 10
+
+    - name: Check Exim process safely
+      delegate_to: localhost
+      shell: docker exec {{ inventory_hostname }} pgrep -f exim || true
+      register: exim_process
+      failed_when: false
+
+    - name: Check SMTP port is open
+      delegate_to: localhost
+      shell: docker exec {{ inventory_hostname }} sh -c "netstat -tlnp | grep :25"
+      register: smtp_port
+      failed_when: smtp_port.rc != 0
+
+    - name: Send test email after patch
+      delegate_to: localhost
+      shell: |
+        docker exec {{ inventory_hostname }} bash -c \
+        "echo 'PATCH SUCCESS - SYSTEM STABLE' | mail -s 'TEST ENV OK' root@localhost"
+
+    - name: Fetch Exim logs
+      delegate_to: localhost
+      shell: docker exec {{ inventory_hostname }} tail -n 20 /var/log/exim4/mainlog
+      register: mail_logs
+
+    - name: Show email delivery logs
+      debug:
+        var: mail_logs.stdout

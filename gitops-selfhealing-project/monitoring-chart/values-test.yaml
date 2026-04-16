@@ -1,0 +1,10 @@
+replicaCount: 1
+
+env:
+  environment: "test"
+
+image:
+  repository: monitor-app
+  tag: latest
+  pullPolicy: IfNotPresent
+

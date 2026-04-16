@@ -1,0 +1,9 @@
+- name: Verify services
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Ensure nginx is running
+      systemd:
+        name: nginx
+        state: started

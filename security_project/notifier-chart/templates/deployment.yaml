@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifier
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: notifier
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: notifier
+  template:
+    metadata:
+      labels:
+        app: notifier
+    spec:
+      containers:
+        - name: notifier
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: 5000
+
+          # 🔐 Environment Variables
+          env:
+            - name: SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: notifier-secret
+                  key: SLACK_WEBHOOK
+
+            - name: EMAIL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: notifier-secret
+                  key: EMAIL_USER
+
+            - name: EMAIL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: notifier-secret
+                  key: EMAIL_PASS
+
+            - name: EMAIL_HOST
+              value: "{{ .Values.env.emailHost }}"
+
+            - name: EMAIL_PORT
+              value: "{{ .Values.env.emailPort }}"
+
+            - name: EMAIL_TO
+              value: "{{ .Values.env.emailTo }}"
+
+            - name: ENVIRONMENT
+              value: "{{ .Values.env.environment }}"
+
+          # Liveness Probe (is app alive?)
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          #  Readiness Probe (is app ready?)
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          #  Resource Limits (optional but good)
+          resources:
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+            requests:
+              memory: "128Mi"
+              cpu: "250m"

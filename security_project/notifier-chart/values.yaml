@@ -1,0 +1,12 @@
+image:
+  repository: notifier
+  tag: latest
+  pullPolicy: Never
+
+env:
+  slackWebhook: "https://hooks.slack.com/services/XXXXX"
+  emailHost: "smtp.gmail.com"
+  emailPort: "587"
+  emailUser: "yourmail@gmail.com"
+  emailPass: "your-app-password"
+  emailTo: "yourmail@gmail.com"
