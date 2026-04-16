@@ -4,6 +4,15 @@ A production-grade GitOps-driven Kubernetes platform enabling automated deployme
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/7990a3da-fa23-4012-bcea-38ed4808d30c" />
 
+🏗️ GitOps Deployment Diagram
+
+Git = Source of Truth
+Argo CD = Reconciliation Engine
+Kubernetes = Desired State Executor
+Monitoring = Feedback Loop Trigger
+
+<img width="4444" height="684" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/e5b96ca1-8ef4-4792-b5d8-47b91d97b034" />
+
 
 📌 Overview
 
