@@ -1,4 +1,4 @@
-🚀 GitOps-Based Kubernetes Self-Healing Platform
+🚀 **GitOps-Based Kubernetes Self-Healing Platform**
 
 A production-grade GitOps-driven Kubernetes platform enabling automated deployment, continuous reconciliation, and autonomous self-healing of cloud-native workloads using Argo CD, Jenkins CI/CD, and a custom Python monitoring engine.
 
