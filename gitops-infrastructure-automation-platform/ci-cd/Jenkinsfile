@@ -10,7 +10,7 @@ pipeline {
     }
 
     environment {
-        ANSIBLE_DIR = "infrastructure/ansible"
+        ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
         PATCH_FOUND = "false"
     }
 
