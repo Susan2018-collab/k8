@@ -99,7 +99,6 @@ Please review logs in Jenkins.
 
 """,
                         mimeType: 'text/plain'
-                        from: "susan.joffin@gmail.com"
                     )
                 }
             }
