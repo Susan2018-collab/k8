@@ -12,7 +12,6 @@ pipeline {
 
     environment {
         ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
-        REPORT_FILE = "scan_report.txt"
     }
 
     stages {
@@ -25,22 +24,20 @@ pipeline {
 
         stage('Security Scan (Ansible)') {
             steps {
-                script {
-                    sh """
-                    ansible-playbook \
-                    -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                    ${ANSIBLE_DIR}/scan.yml \
-                    --extra-vars "env=${params.ENV} email_to=${params.EMAIL_TO}"
-                    """
-                }
+                sh """
+                ansible-playbook \
+                -i ${ANSIBLE_DIR}/inventory/hosts.ini \
+                ${ANSIBLE_DIR}/scan.yml \
+                --extra-vars "env=${params.ENV}"
+                """
             }
         }
 
         stage('Evaluate Scan Result') {
             steps {
                 script {
-                    // TODO: Replace with actual parsing logic
                     echo "Evaluating scan results..."
+                    // Replace with real logic later
                     env.PATCH_FOUND = "true"
                 }
             }
@@ -78,25 +75,22 @@ pipeline {
             }
         }
 
-        stage('Test Success Email') {
+        stage('Send Test Success Email') {
             when {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
                 script {
-                    echo "DEBUG: Email = ${params.EMAIL_TO}"
-
                     emailext(
-                        to: "${params.EMAIL_TO}",
-                        subject: "✅ TEST PATCH SUCCESS",
-                        body: """\
-Test environment patching completed successfully.
+                        to: params.EMAIL_TO.trim(),
+                        subject: "TEST PATCH SUCCESS",
+                        body: """Test environment patching completed successfully.
 
 Environment: TEST
 Status: SUCCESS
 
-Please review logs in Jenkins.
-
+Job: ${env.JOB_NAME}
+Build: ${env.BUILD_NUMBER}
 """,
                         mimeType: 'text/plain'
                     )
@@ -136,16 +130,15 @@ Please review logs in Jenkins.
 
         success {
             emailext(
-                to: "${params.EMAIL_TO}",
-                subject: "✅ DAILY SECURITY SCAN SUCCESS",
-                body: """\
-Pipeline completed successfully.
+                to: params.EMAIL_TO.trim(),
+                subject: "DAILY SECURITY SCAN SUCCESS",
+                body: """Pipeline completed successfully.
 
 Environment: ${params.ENV}
 Status: SUCCESS
 
-Check Jenkins for full details.
-
+Job: ${env.JOB_NAME}
+Build: ${env.BUILD_NUMBER}
 """,
                 mimeType: 'text/plain'
             )
@@ -153,16 +146,17 @@ Check Jenkins for full details.
 
         failure {
             emailext(
-                to: "${params.EMAIL_TO}",
-                subject: "❌ DAILY SECURITY SCAN FAILED",
-                body: """\
-Pipeline execution failed.
+                to: params.EMAIL_TO.trim(),
+                subject: "DAILY SECURITY SCAN FAILED",
+                body: """Pipeline execution failed.
 
 Environment: ${params.ENV}
 Status: FAILED
 
-Please check Jenkins logs immediately.
+Job: ${env.JOB_NAME}
+Build: ${env.BUILD_NUMBER}
 
+Check Jenkins logs immediately.
 """,
                 mimeType: 'text/plain'
             )
