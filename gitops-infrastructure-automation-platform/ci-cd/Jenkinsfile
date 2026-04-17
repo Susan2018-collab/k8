@@ -39,7 +39,8 @@ pipeline {
         stage('Evaluate Scan Result') {
             steps {
                 script {
-                    // simple placeholder (replace later with real parsing logic)
+                    // TODO: Replace with actual parsing logic
+                    echo "Evaluating scan results..."
                     env.PATCH_FOUND = "true"
                 }
             }
@@ -82,11 +83,24 @@ pipeline {
                 expression { env.PATCH_FOUND == "true" }
             }
             steps {
-                emailext(
-                    to: "${params.EMAIL_TO}",
-                    subject: "TEST PATCH SUCCESS",
-                    body: "Test environment patched and validated successfully."
-                )
+                script {
+                    echo "DEBUG: Email = ${params.EMAIL_TO}"
+
+                    emailext(
+                        to: "${params.EMAIL_TO}",
+                        subject: "✅ TEST PATCH SUCCESS",
+                        body: """\
+Test environment patching completed successfully.
+
+Environment: TEST
+Status: SUCCESS
+
+Please review logs in Jenkins.
+
+""",
+                        mimeType: 'text/plain'
+                    )
+                }
             }
         }
 
@@ -115,19 +129,42 @@ pipeline {
     }
 
     post {
+
+        always {
+            echo "Pipeline completed. Email target: ${params.EMAIL_TO}"
+        }
+
         success {
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "DAILY SECURITY SCAN SUCCESS",
-                body: "Pipeline completed successfully. Check Jenkins for details."
+                subject: "✅ DAILY SECURITY SCAN SUCCESS",
+                body: """\
+Pipeline completed successfully.
+
+Environment: ${params.ENV}
+Status: SUCCESS
+
+Check Jenkins for full details.
+
+""",
+                mimeType: 'text/plain'
             )
         }
 
         failure {
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "DAILY SECURITY SCAN FAILED",
-                body: "Pipeline failed. Please check Jenkins logs."
+                subject: "❌ DAILY SECURITY SCAN FAILED",
+                body: """\
+Pipeline execution failed.
+
+Environment: ${params.ENV}
+Status: FAILED
+
+Please check Jenkins logs immediately.
+
+""",
+                mimeType: 'text/plain'
             )
         }
     }
