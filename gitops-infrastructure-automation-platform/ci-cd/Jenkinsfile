@@ -6,6 +6,10 @@ pipeline {
         choice(name: 'ENV', choices: ['test', 'prod', 'all'], description: 'Target environment')
     }
 
+    triggers {
+        cron('H/10 * * * *')
+    }
+
     environment {
         ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
 
@@ -31,7 +35,7 @@ pipeline {
         /* =========================
            SECURITY SCAN (TEST)
         ========================= */
-        stage('Security Scan (Test)') {
+        stage('Security Scan') {
             steps {
                 script {
                     sh """
@@ -41,13 +45,16 @@ pipeline {
                     --extra-vars "env=test"
                     """
 
-                    if (fileExists('scan_report.txt')) {
-                        env.SCAN_REPORT = readFile('scan_report.txt')
+                    script {
+                        if (fileExists('scan_report.txt')) {
+                            env.SCAN_REPORT = readFile('scan_report.txt')
 
-                        // BLOCK HIGH vulnerabilities
-                        if (env.SCAN_REPORT.toLowerCase().contains("high")) {
-                            env.HIGH_VULN_FOUND = "true"
-                            error "HIGH severity vulnerabilities detected. Blocking pipeline."
+                            if (env.SCAN_REPORT.toLowerCase().contains("high")) {
+                                env.HIGH_VULN_FOUND = "true"
+                                error "HIGH severity vulnerability found. Blocking pipeline."
+                            }
+                        } else {
+                            env.SCAN_REPORT = "Scan report not found"
                         }
                     }
                 }
@@ -55,30 +62,26 @@ pipeline {
         }
 
         /* =========================
-           EMAIL: TEST SCAN REPORT
+           EMAIL TEST SCAN REPORT
         ========================= */
         stage('Email Test Scan Report') {
             steps {
-                script {
-                    emailext(
-                        to: params.EMAIL_TO.trim(),
-                        subject: "TEST SCAN REPORT",
-                        mimeType: 'text/plain',
-                        body: """
-Security scan completed for TEST environment.
+                emailext(
+                    to: params.EMAIL_TO.trim(),
+                    subject: "TEST SCAN REPORT",
+                    mimeType: 'text/plain',
+                    body: """
+TEST Security Scan Completed.
 
 SCAN REPORT:
 ----------------------------------------
 ${env.SCAN_REPORT}
 ----------------------------------------
 
-Status: No HIGH vulnerabilities detected (if pipeline continued)
-
 Job: ${env.JOB_NAME}
 Build: ${env.BUILD_NUMBER}
 """
-                    )
-                }
+                )
             }
         }
 
@@ -86,51 +89,59 @@ Build: ${env.BUILD_NUMBER}
            PATCH TEST
         ========================= */
         stage('Patch Test Environment') {
+            when {
+                expression { env.HIGH_VULN_FOUND == "false" }
+            }
             steps {
-                sh """
-                ansible-playbook \
-                -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                ${ANSIBLE_DIR}/patch.yml \
-                --extra-vars "env=test"
-                """
+                script {
+                    sh """
+                    ansible-playbook \
+                    -i ${ANSIBLE_DIR}/inventory/hosts.ini \
+                    ${ANSIBLE_DIR}/patch.yml \
+                    --extra-vars "env=test"
+                    """
 
-                if (fileExists('patch_report.txt')) {
-                    env.PATCH_REPORT = readFile('patch_report.txt')
+                    script {
+                        if (fileExists('patch_report.txt')) {
+                            env.PATCH_REPORT = readFile('patch_report.txt')
+                        } else {
+                            env.PATCH_REPORT = "Patch report not found"
+                        }
+                    }
                 }
             }
         }
 
         /* =========================
-           EMAIL: TEST SUCCESS + APPROVAL LINK
+           EMAIL TEST SUCCESS + APPROVAL LINK
         ========================= */
-        stage('Email Test Success + Approval Link') {
+        stage('Email Test Success + Approval') {
+            when {
+                expression { env.HIGH_VULN_FOUND == "false" }
+            }
             steps {
                 script {
                     def approvalLink = "${env.BUILD_URL}input"
 
                     emailext(
                         to: params.EMAIL_TO.trim(),
-                        subject: "TEST SUCCESS - APPROVAL REQUIRED FOR PRODUCTION",
+                        subject: "TEST SUCCESS - APPROVAL REQUIRED",
                         mimeType: 'text/plain',
                         body: """
-TEST environment patching completed successfully.
-
-PATCH REPORT:
-----------------------------------------
-${env.PATCH_REPORT}
-----------------------------------------
+TEST environment completed successfully.
 
 SCAN REPORT:
 ----------------------------------------
 ${env.SCAN_REPORT}
 ----------------------------------------
 
-NEXT STEP:
-Approve production deployment using link below:
+PATCH REPORT:
+----------------------------------------
+${env.PATCH_REPORT}
+----------------------------------------
 
+Approve production deployment:
 ${approvalLink}
-
-OR go to Jenkins build → Click "Proceed"
 """
                     )
                 }
@@ -138,9 +149,12 @@ OR go to Jenkins build → Click "Proceed"
         }
 
         /* =========================
-           APPROVAL (PROD GATE)
+           APPROVAL + AUDIT TRAIL
         ========================= */
         stage('Approval for Production') {
+            when {
+                expression { env.HIGH_VULN_FOUND == "false" }
+            }
             steps {
                 script {
                     env.APPROVAL_USER =
@@ -148,7 +162,7 @@ OR go to Jenkins build → Click "Proceed"
 
                     env.APPROVAL_TIME = new Date().toString()
 
-                    input message: "Approve deployment to PRODUCTION?"
+                    input message: "Approve production deployment?"
                 }
             }
         }
@@ -157,18 +171,17 @@ OR go to Jenkins build → Click "Proceed"
            PATCH PRODUCTION
         ========================= */
         stage('Patch Production') {
+            when {
+                expression { env.HIGH_VULN_FOUND == "false" }
+            }
             steps {
                 script {
-                    try {
-                        sh """
-                        ansible-playbook \
-                        -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                        ${ANSIBLE_DIR}/patch.yml \
-                        --extra-vars "env=prod"
-                        """
-                    } catch (Exception e) {
-                        error "Production patch failed"
-                    }
+                    sh """
+                    ansible-playbook \
+                    -i ${ANSIBLE_DIR}/inventory/hosts.ini \
+                    ${ANSIBLE_DIR}/patch.yml \
+                    --extra-vars "env=prod"
+                    """
                 }
             }
         }
@@ -176,7 +189,7 @@ OR go to Jenkins build → Click "Proceed"
         /* =========================
            ROLLBACK ON FAILURE
         ========================= */
-        stage('Rollback (if failure)') {
+        stage('Rollback') {
             when {
                 expression { currentBuild.currentResult == 'FAILURE' }
             }
@@ -194,31 +207,27 @@ OR go to Jenkins build → Click "Proceed"
     }
 
     /* =========================
-       FINAL EMAIL REPORT
+       EMAIL POST ACTIONS
     ========================= */
     post {
 
         success {
             emailext(
                 to: params.EMAIL_TO.trim(),
-                subject: "PRODUCTION DEPLOYMENT SUCCESS",
+                subject: "PRODUCTION SUCCESS",
                 mimeType: 'text/plain',
                 body: """
-Production deployment completed successfully.
+Production deployment successful.
 
 APPROVAL DETAILS:
 Approved By: ${env.APPROVAL_USER}
 Approved At: ${env.APPROVAL_TIME}
 
-SCAN SUMMARY:
-----------------------------------------
+SCAN:
 ${env.SCAN_REPORT}
-----------------------------------------
 
-PATCH SUMMARY:
-----------------------------------------
+PATCH:
 ${env.PATCH_REPORT}
-----------------------------------------
 
 Job: ${env.JOB_NAME}
 Build: ${env.BUILD_NUMBER}
@@ -229,19 +238,19 @@ Build: ${env.BUILD_NUMBER}
         failure {
             emailext(
                 to: params.EMAIL_TO.trim(),
-                subject: "PIPELINE FAILED / ROLLBACK EXECUTED",
+                subject: "PIPELINE FAILED / ROLLBACK",
                 mimeType: 'text/plain',
                 body: """
 Pipeline failed or was blocked.
 
-HIGH VULNERABILITY FLAG: ${env.HIGH_VULN_FOUND}
+HIGH VULNERABILITY: ${env.HIGH_VULN_FOUND}
 
-Rollback will be executed automatically if production was impacted.
+Rollback executed if production was impacted.
 
 Job: ${env.JOB_NAME}
 Build: ${env.BUILD_NUMBER}
 
-Check logs:
+Logs:
 ${env.BUILD_URL}
 """
             )
