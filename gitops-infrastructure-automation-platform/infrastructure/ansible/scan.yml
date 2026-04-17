@@ -1,7 +1,7 @@
 ---
 - name: Enterprise Daily Vulnerability Scan
   hosts: all
-  become: yes
+  become: no
   gather_facts: yes
 
   vars:
