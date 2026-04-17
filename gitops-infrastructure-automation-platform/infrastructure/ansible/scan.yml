@@ -6,7 +6,6 @@
 
   vars:
     scan_mode: "daily"
-    email_to: "susan.joffin@gmail.com"
 
   tasks:
 
@@ -18,42 +17,37 @@
       when: env is defined and env != "all" and inventory_hostname not in groups[env]
 
     # =========================
-    # FACT SAFETY (MODERN STYLE)
+    # OS DETECTION
     # =========================
-    - name: Set OS family fact
+    - name: Set OS family
       set_fact:
         os_family: "{{ ansible_facts['os_family'] }}"
 
     # =========================
-    # DEBIAN / UBUNTU SCAN
+    # SAFE DEBIAN SCAN (NO LOCKS)
     # =========================
-    - name: Update package metadata (Debian)
-      apt:
-        update_cache: yes
-      when: os_family == "Debian"
-
-    - name: List upgradable packages (Debian)
-      shell: apt list --upgradable
+    - name: Check Debian security updates (safe mode)
+      shell: apt-get -s upgrade
       register: debian_scan
       changed_when: false
-      ignore_errors: yes
+      failed_when: false
       when: os_family == "Debian"
 
     # =========================
-    # RHEL / CENTOS SCAN
+    # SAFE RHEL SCAN
     # =========================
-    - name: RHEL security scan (safe execution)
+    - name: Check RHEL security updates
       shell: |
         if command -v dnf >/dev/null 2>&1; then
-          dnf updateinfo list security
+          dnf updateinfo list security || true
         elif command -v yum >/dev/null 2>&1; then
-          yum updateinfo list security
+          yum updateinfo list security || true
         else
-          echo "No RHEL package manager found"
+          echo "No RHEL tools found"
         fi
       register: rhel_scan
       changed_when: false
-      ignore_errors: yes
+      failed_when: false
       when: os_family == "RedHat"
 
     # =========================
@@ -67,15 +61,15 @@
           ENTERPRISE SECURITY SCAN
           ============================
           Host: {{ inventory_hostname }}
-          OS Family: {{ os_family }}
           OS: {{ ansible_facts['distribution'] }}
-          Environment: {{ env | default('all') }}
-          Scan Mode: {{ scan_mode }}
+          Family: {{ os_family }}
+          Env: {{ env | default('all') }}
+          Scan: {{ scan_mode }}
 
-          -------- DEBIAN UPGRADES --------
+          -------- DEBIAN --------
           {{ debian_scan.stdout | default('Not applicable') }}
 
-          -------- RHEL SECURITY --------
+          -------- RHEL --------
           {{ rhel_scan.stdout | default('Not applicable') }}
 
     # =========================
@@ -89,11 +83,3 @@
     - name: Store report
       set_fact:
         report: "{{ report_file.content | b64decode }}"
-
-    # =========================
-    # EMAIL NOTIFICATION
-    # =========================
-    - name: Send email report
-      delegate_to: localhost
-      shell: |
-        echo "{{ report }}" | mail -s "DAILY SECURITY SCAN - {{ inventory_hostname }} ({{ env | default('all') }})" {{ email_to }}
