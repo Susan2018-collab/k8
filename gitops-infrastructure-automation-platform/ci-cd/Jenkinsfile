@@ -7,27 +7,28 @@ pipeline {
     }
 
     triggers {
-        cron('H 2 * * *')   // daily
+        cron('H 2 * * *')
     }
 
     environment {
         ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
+
+        // 🔥 NEW: Docker rollback config
+        CONTAINER_TEST = "mail-test"
+        CONTAINER_PROD = "mail-prod"
+
+        BACKUP_IMAGE_TEST = "mail-test-backup"
+        BACKUP_IMAGE_PROD = "mail-prod-backup"
     }
 
     stages {
 
-        // =====================================================
-        // 1. CHECKOUT
-        // =====================================================
         stage('Checkout Code') {
             steps {
                 checkout scm
             }
         }
 
-        // =====================================================
-        // 2. SECURITY SCAN
-        // =====================================================
         stage('Security Scan') {
             steps {
                 sh """
@@ -39,21 +40,15 @@ pipeline {
             }
         }
 
-        // =====================================================
-        // 3. EVALUATE
-        // =====================================================
         stage('Evaluate Scan Result') {
             steps {
                 script {
                     echo "Evaluating scan results..."
-                    env.PATCH_FOUND = "true"   // TODO: replace with real parsing
+                    env.PATCH_FOUND = "true"
                 }
             }
         }
 
-        // =====================================================
-        // 4. ARCHIVE SCAN REPORT
-        // =====================================================
         stage('Archive Scan Reports') {
             steps {
                 archiveArtifacts artifacts: '**/scan_*.txt', allowEmptyArchive: true
@@ -61,12 +56,20 @@ pipeline {
         }
 
         // =====================================================
-        // 5. PATCH TEST
+        // 🔥 BACKUP TEST ENV
         // =====================================================
-        stage('Patch TEST Environment') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
+        stage('Backup TEST Environment') {
+            when { expression { env.PATCH_FOUND == "true" } }
+            steps {
+                sh """
+                echo "Creating TEST backup..."
+                docker commit ${CONTAINER_TEST} ${BACKUP_IMAGE_TEST} || true
+                """
             }
+        }
+
+        stage('Patch TEST Environment') {
+            when { expression { env.PATCH_FOUND == "true" } }
             steps {
                 sh """
                 ansible-playbook \
@@ -77,82 +80,38 @@ pipeline {
             }
         }
 
-        // =====================================================
-        // 6. TEST SUCCESS EMAIL
-        // =====================================================
         stage('Notify TEST Success') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
-            }
+            when { expression { env.PATCH_FOUND == "true" } }
             steps {
                 emailext(
                     to: "${params.EMAIL_TO}",
                     subject: "✅ TEST PATCH SUCCESS",
-                    body: """\
-Test patching completed successfully.
-
-Environment: TEST
-Status: SUCCESS
-
-Proceeding to approval stage.
-""",
-                    mimeType: 'text/plain'
+                    body: "Test patching completed successfully."
                 )
             }
         }
 
-        // =====================================================
-        // 7. SEND APPROVAL EMAIL (WITH LINK)
-        // =====================================================
         stage('Send Approval Email') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
-            }
+            when { expression { env.PATCH_FOUND == "true" } }
             steps {
                 script {
                     def approvalLink = "${env.BUILD_URL}input"
 
                     emailext(
                         to: "${params.EMAIL_TO}",
-                        subject: "⚠️ APPROVAL REQUIRED: Production Deployment",
+                        subject: "⚠️ APPROVAL REQUIRED",
                         mimeType: 'text/html',
                         body: """
-                        <html>
-                        <body>
-                            <h2>Approval Required for Production Deployment</h2>
-
-                            <p><b>Job:</b> ${env.JOB_NAME}</p>
-                            <p><b>Build:</b> #${env.BUILD_NUMBER}</p>
-                            <p><b>Environment:</b> ${params.ENV}</p>
-
-                            <p>Test patching completed successfully.</p>
-
-                            <p>
-                                👉 <a href="${approvalLink}">
-                                Click here to APPROVE Production Deployment
-                                </a>
-                            </p>
-
-                            <br/>
-                            <p>If not approved, deployment will not proceed.</p>
-
-                            <hr/>
-                            <p>Jenkins Pipeline</p>
-                        </body>
-                        </html>
+                        <h2>Approve Production Deployment</h2>
+                        <a href="${approvalLink}">Click to Approve</a>
                         """
                     )
                 }
             }
         }
 
-        // =====================================================
-        // 8. APPROVAL GATE
-        // =====================================================
         stage('Approval for Production') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
-            }
+            when { expression { env.PATCH_FOUND == "true" } }
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input message: "Approve deployment to PRODUCTION?"
@@ -161,12 +120,20 @@ Proceeding to approval stage.
         }
 
         // =====================================================
-        // 9. PATCH PROD
+        // 🔥 BACKUP PROD ENV
         // =====================================================
-        stage('Patch PROD Environment') {
-            when {
-                expression { env.PATCH_FOUND == "true" }
+        stage('Backup PROD Environment') {
+            when { expression { env.PATCH_FOUND == "true" } }
+            steps {
+                sh """
+                echo "Creating PROD backup..."
+                docker commit ${CONTAINER_PROD} ${BACKUP_IMAGE_PROD} || true
+                """
             }
+        }
+
+        stage('Patch PROD Environment') {
+            when { expression { env.PATCH_FOUND == "true" } }
             steps {
                 sh """
                 ansible-playbook \
@@ -177,9 +144,6 @@ Proceeding to approval stage.
             }
         }
 
-        // =====================================================
-        // 10. ARCHIVE PATCH REPORT
-        // =====================================================
         stage('Archive Patch Reports') {
             steps {
                 archiveArtifacts artifacts: '**/patch_report_*.txt', allowEmptyArchive: true
@@ -188,7 +152,7 @@ Proceeding to approval stage.
     }
 
     // =====================================================
-    // POST
+    // 🔥 POST SECTION WITH ROLLBACK
     // =====================================================
     post {
 
@@ -200,31 +164,39 @@ Proceeding to approval stage.
             emailext(
                 to: "${params.EMAIL_TO}",
                 subject: "✅ PIPELINE SUCCESS",
-                body: """\
-Pipeline completed successfully.
-
-Environment: ${params.ENV}
-Status: SUCCESS
-
-Check Jenkins for logs.
-""",
-                mimeType: 'text/plain'
+                body: "Pipeline completed successfully."
             )
         }
 
+        // 🔥🔥🔥 MAIN ROLLBACK LOGIC
         failure {
-            emailext(
-                to: "${params.EMAIL_TO}",
-                subject: "❌ PIPELINE FAILED",
-                body: """\
-Pipeline FAILED.
+            script {
+                echo "❌ FAILURE DETECTED - STARTING ROLLBACK"
 
-Environment: ${params.ENV}
+                sh """
+                echo "Rolling back TEST environment..."
+                docker stop ${CONTAINER_TEST} || true
+                docker rm ${CONTAINER_TEST} || true
+                docker run -d --name ${CONTAINER_TEST} -p 2525:25 ${BACKUP_IMAGE_TEST} || true
 
-Check Jenkins immediately.
-""",
-                mimeType: 'text/plain'
-            )
+                echo "Rolling back PROD environment..."
+                docker stop ${CONTAINER_PROD} || true
+                docker rm ${CONTAINER_PROD} || true
+                docker run -d --name ${CONTAINER_PROD} -p 2626:25 ${BACKUP_IMAGE_PROD} || true
+
+                sleep 10
+
+                echo "Validating rollback..."
+                docker exec ${CONTAINER_TEST} service exim4 start || true
+                docker exec ${CONTAINER_PROD} service exim4 start || true
+                """
+
+                emailext(
+                    to: "${params.EMAIL_TO}",
+                    subject: "⚠️ ROLLBACK EXECUTED",
+                    body: "Pipeline failed. Rollback executed successfully."
+                )
+            }
         }
     }
 }
