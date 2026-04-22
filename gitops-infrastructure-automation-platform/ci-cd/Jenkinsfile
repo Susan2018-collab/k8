@@ -1,9 +1,10 @@
+import groovy.json.JsonSlurper
+
 pipeline {
     agent any
 
     parameters {
         string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification Email')
-        choice(name: 'ENV', choices: ['test', 'prod', 'all'], description: 'Target Environment')
     }
 
     triggers {
@@ -13,7 +14,6 @@ pipeline {
     environment {
         ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
 
-        // 🔥 NEW: Docker rollback config
         CONTAINER_TEST = "mail-test"
         CONTAINER_PROD = "mail-prod"
 
@@ -23,95 +23,133 @@ pipeline {
 
     stages {
 
-        stage('Checkout Code') {
+        // =====================================================
+        // 1. Checkout
+        // =====================================================
+        stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
-        stage('Security Scan') {
+        // =====================================================
+        // 2. TEST: Backup + Patch + Scan
+        // =====================================================
+        stage('TEST: Backup + Patch + Scan') {
             steps {
                 sh """
-                ansible-playbook \
-                -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                ${ANSIBLE_DIR}/scan.yml \
-                --extra-vars "env=${params.ENV} email_to=${params.EMAIL_TO}"
-                """
-            }
-        }
-
-        stage('Evaluate Scan Result') {
-            steps {
-                script {
-                    echo "Evaluating scan results..."
-                    env.PATCH_FOUND = "true"
-                }
-            }
-        }
-
-        stage('Archive Scan Reports') {
-            steps {
-                archiveArtifacts artifacts: '**/scan_*.txt', allowEmptyArchive: true
-            }
-        }
-
-        // =====================================================
-        // 🔥 BACKUP TEST ENV
-        // =====================================================
-        stage('Backup TEST Environment') {
-            when { expression { env.PATCH_FOUND == "true" } }
-            steps {
-                sh """
-                echo "Creating TEST backup..."
+                echo "Backing up TEST..."
                 docker commit ${CONTAINER_TEST} ${BACKUP_IMAGE_TEST} || true
-                """
-            }
-        }
 
-        stage('Patch TEST Environment') {
-            when { expression { env.PATCH_FOUND == "true" } }
-            steps {
-                sh """
+                echo "Running TEST patch..."
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=test"
                 """
+
+                sh """
+                echo "Running Trivy scan (TEST)..."
+                trivy image \
+                    --format json \
+                    -o trivy-test.json \
+                    ${CONTAINER_TEST} || true
+
+                trivy image \
+                    --format template \
+                    --template "@contrib/html.tpl" \
+                    -o trivy-test.html \
+                    ${CONTAINER_TEST} || true
+                """
             }
         }
 
-        stage('Notify TEST Success') {
-            when { expression { env.PATCH_FOUND == "true" } }
-            steps {
-                emailext(
-                    to: "${params.EMAIL_TO}",
-                    subject: "✅ TEST PATCH SUCCESS",
-                    body: "Test patching completed successfully."
-                )
-            }
-        }
-
-        stage('Send Approval Email') {
-            when { expression { env.PATCH_FOUND == "true" } }
+        // =====================================================
+        // 3. Parse TEST CVE Report
+        // =====================================================
+        stage('Parse TEST CVE Report') {
             steps {
                 script {
+
+                    def json = readFile("trivy-test.json")
+                    def parsed = new JsonSlurper().parseText(json)
+
+                    int critical = 0
+                    int high = 0
+                    int medium = 0
+                    int low = 0
+
+                    parsed.Results.each { r ->
+                        r.Vulnerabilities?.each { v ->
+                            switch(v.Severity) {
+                                case "CRITICAL": critical++; break
+                                case "HIGH": high++; break
+                                case "MEDIUM": medium++; break
+                                case "LOW": low++; break
+                            }
+                        }
+                    }
+
+                    env.TEST_CVE_SUMMARY = """
+CRITICAL: ${critical}
+HIGH: ${high}
+MEDIUM: ${medium}
+LOW: ${low}
+"""
+                }
+            }
+        }
+
+        // =====================================================
+        // 4. TEST Email + Approval Link
+        // =====================================================
+        stage('Send TEST Report + PROD Approval Link') {
+            steps {
+                script {
+
                     def approvalLink = "${env.BUILD_URL}input"
 
                     emailext(
                         to: "${params.EMAIL_TO}",
-                        subject: "⚠️ APPROVAL REQUIRED",
+                        subject: "🧪 TEST COMPLETE - APPROVAL FOR PROD REQUIRED",
                         mimeType: 'text/html',
+
                         body: """
-                        <h2>Approve Production Deployment</h2>
-                        <a href="${approvalLink}">Click to Approve</a>
-                        """
+<h2>🧪 TEST ENVIRONMENT REPORT</h2>
+
+<h3>🔐 CVE Summary</h3>
+<pre>${env.TEST_CVE_SUMMARY}</pre>
+
+<h3>🛠 What was done</h3>
+<ul>
+<li>Backup created</li>
+<li>Patches applied (TEST)</li>
+<li>Trivy scan executed</li>
+</ul>
+
+<h3>🚦 Next Step</h3>
+<p>Approve production deployment:</p>
+
+<a href="${approvalLink}" style="padding:10px 15px;background:#28a745;color:white;text-decoration:none;">
+👉 APPROVE PROD DEPLOYMENT
+</a>
+
+<p>This approval triggers production patching.</p>
+""",
+
+                        attachmentsPattern: """
+trivy-test.html,
+trivy-test.json
+"""
                     )
                 }
             }
         }
 
-        stage('Approval for Production') {
-            when { expression { env.PATCH_FOUND == "true" } }
+        // =====================================================
+        // 5. PROD APPROVAL GATE
+        // =====================================================
+        stage('PROD Approval Gate') {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input message: "Approve deployment to PRODUCTION?"
@@ -120,83 +158,130 @@ pipeline {
         }
 
         // =====================================================
-        // 🔥 BACKUP PROD ENV
+        // 6. PROD Backup + Patch + Scan
         // =====================================================
-        stage('Backup PROD Environment') {
-            when { expression { env.PATCH_FOUND == "true" } }
+        stage('PROD: Backup + Patch + Scan') {
             steps {
                 sh """
-                echo "Creating PROD backup..."
+                echo "Backing up PROD..."
                 docker commit ${CONTAINER_PROD} ${BACKUP_IMAGE_PROD} || true
-                """
-            }
-        }
 
-        stage('Patch PROD Environment') {
-            when { expression { env.PATCH_FOUND == "true" } }
-            steps {
-                sh """
+                echo "Running PROD patch..."
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=prod"
                 """
+
+                sh """
+                echo "Running Trivy scan (PROD BLOCKING)..."
+                trivy image \
+                    --exit-code 1 \
+                    --severity HIGH,CRITICAL \
+                    --format json \
+                    -o trivy-prod.json \
+                    ${CONTAINER_PROD}
+
+                trivy image \
+                    --format template \
+                    --template "@contrib/html.tpl" \
+                    -o trivy-prod.html \
+                    ${CONTAINER_PROD}
+                """
             }
         }
 
-        stage('Archive Patch Reports') {
+        // =====================================================
+        // 7. Parse PROD CVE
+        // =====================================================
+        stage('Parse PROD CVE') {
             steps {
-                archiveArtifacts artifacts: '**/patch_report_*.txt', allowEmptyArchive: true
+                script {
+
+                    def json = readFile("trivy-prod.json")
+                    def parsed = new JsonSlurper().parseText(json)
+
+                    int critical = 0
+                    int high = 0
+                    int medium = 0
+                    int low = 0
+
+                    parsed.Results.each { r ->
+                        r.Vulnerabilities?.each { v ->
+                            switch(v.Severity) {
+                                case "CRITICAL": critical++; break
+                                case "HIGH": high++; break
+                                case "MEDIUM": medium++; break
+                                case "LOW": low++; break
+                            }
+                        }
+                    }
+
+                    env.PROD_CVE_SUMMARY = """
+CRITICAL: ${critical}
+HIGH: ${high}
+MEDIUM: ${medium}
+LOW: ${low}
+"""
+                }
+            }
+        }
+
+        // =====================================================
+        // 8. PROD Email Report
+        // =====================================================
+        stage('Send PROD Report') {
+            steps {
+                emailext(
+                    to: "${params.EMAIL_TO}",
+                    subject: "🏭 PROD DEPLOYMENT REPORT",
+                    mimeType: 'text/html',
+
+                    body: """
+<h2>🏭 PRODUCTION DEPLOYMENT COMPLETE</h2>
+
+<h3>🔐 CVE Summary</h3>
+<pre>${env.PROD_CVE_SUMMARY}</pre>
+
+<h3>🛠 Actions Taken</h3>
+<ul>
+<li>Patches applied in PROD</li>
+<li>Security scan executed (Trivy)</li>
+</ul>
+
+<h3>🚦 Policy</h3>
+<p>PROD = BLOCK HIGH/CRITICAL vulnerabilities</p>
+""",
+
+                    attachmentsPattern: """
+trivy-prod.html,
+trivy-prod.json
+"""
+                )
             }
         }
     }
 
     // =====================================================
-    // 🔥 POST SECTION WITH ROLLBACK
+    // POST (ROLLBACK)
     // =====================================================
     post {
+        failure {
+            sh """
+            docker stop ${CONTAINER_TEST} || true
+            docker rm ${CONTAINER_TEST} || true
+            docker run -d --name ${CONTAINER_TEST} ${BACKUP_IMAGE_TEST} || true
 
-        always {
-            echo "Pipeline completed. Email target: ${params.EMAIL_TO}"
-        }
+            docker stop ${CONTAINER_PROD} || true
+            docker rm ${CONTAINER_PROD} || true
+            docker run -d --name ${CONTAINER_PROD} ${BACKUP_IMAGE_PROD} || true
+            """
 
-        success {
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "✅ PIPELINE SUCCESS",
-                body: "Pipeline completed successfully."
+                subject: "❌ PIPELINE FAILED - ROLLBACK EXECUTED",
+                body: "Rollback executed. Check Jenkins logs."
             )
-        }
-
-        // 🔥🔥🔥 MAIN ROLLBACK LOGIC
-        failure {
-            script {
-                echo "❌ FAILURE DETECTED - STARTING ROLLBACK"
-
-                sh """
-                echo "Rolling back TEST environment..."
-                docker stop ${CONTAINER_TEST} || true
-                docker rm ${CONTAINER_TEST} || true
-                docker run -d --name ${CONTAINER_TEST} -p 2525:25 ${BACKUP_IMAGE_TEST} || true
-
-                echo "Rolling back PROD environment..."
-                docker stop ${CONTAINER_PROD} || true
-                docker rm ${CONTAINER_PROD} || true
-                docker run -d --name ${CONTAINER_PROD} -p 2626:25 ${BACKUP_IMAGE_PROD} || true
-
-                sleep 10
-
-                echo "Validating rollback..."
-                docker exec ${CONTAINER_TEST} service exim4 start || true
-                docker exec ${CONTAINER_PROD} service exim4 start || true
-                """
-
-                emailext(
-                    to: "${params.EMAIL_TO}",
-                    subject: "⚠️ ROLLBACK EXECUTED",
-                    body: "Pipeline failed. Rollback executed successfully."
-                )
-            }
         }
     }
 }
