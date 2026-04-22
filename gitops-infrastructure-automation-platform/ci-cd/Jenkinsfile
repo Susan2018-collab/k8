@@ -1,164 +1,156 @@
-import groovy.json.JsonSlurper
-
 pipeline {
     agent any
 
+    triggers {
+        cron('H/10 * * * *') // every 10 minutes
+    }
+
     parameters {
-        string(name: 'EMAIL_TO', defaultValue: 'susan.joffin@gmail.com', description: 'Notification Email')
+        choice(
+            name: 'TARGET_ENV',
+            choices: ['test', 'prod'],
+            description: 'Select environment (default TEST via scheduler)'
+        )
+        booleanParam(
+            name: 'FORCE_ROLLBACK',
+            defaultValue: false,
+            description: 'Trigger rollback manually'
+        )
     }
 
     environment {
-        ANSIBLE_DIR = "gitops-infrastructure-automation-platform/infrastructure/ansible"
-        CONTAINER_TEST = "mail-test"
-        CONTAINER_PROD = "mail-prod"
+        IMAGE_NAME = "mail-server"
+        TEST_CONT = "mail-test"
+        PROD_CONT = "mail-prod"
+
+        PRE_SCAN = "trivy-pre.json"
+        POST_SCAN = "trivy-post.json"
+
+        REPORT = "final-report.txt"
     }
 
     stages {
 
-        // =====================================================
-        // 1. CHECKOUT
-        // =====================================================
-        stage('Checkout') {
+        stage('Init') {
             steps {
-                checkout scm
+                script {
+                    env.SELECTED_ENV = params.TARGET_ENV ?: "test"
+                    echo "Selected ENV: ${env.SELECTED_ENV}"
+                }
             }
         }
 
-        // =====================================================
-        // 2. INSTALL TRIVY
-        // =====================================================
-        stage('Install Trivy') {
-            steps {
-                sh """
-                set -e
-                if ! command -v trivy >/dev/null 2>&1; then
-                    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-                    | sh -s -- -b /usr/local/bin
-                fi
-                trivy --version
-                """
-            }
-        }
-
-        // =====================================================
-        // 3. PRE TRIVY SCAN (BASELINE)
-        // =====================================================
-        stage('Trivy Pre Scan') {
+        stage('Pre Scan') {
             steps {
                 sh """
                 echo "Running PRE scan..."
-
-                docker commit ${CONTAINER_TEST} mail-test:pre || true
-
-                trivy image \
-                  --format json \
-                  -o trivy-pre.json \
-                  mail-test:pre || true
+                docker commit ${TEST_CONT} ${IMAGE_NAME}:pre
+                trivy image --severity CRITICAL,HIGH --format json -o ${PRE_SCAN} ${IMAGE_NAME}:pre
                 """
             }
         }
 
-        // =====================================================
-        // 4. RUN PATCH (ANSIBLE)
-        // =====================================================
-        stage('Run Patch (Ansible)') {
+        stage('Extract CVE Details') {
             steps {
-                sh """
-                ansible-playbook \
-                -i ${ANSIBLE_DIR}/inventory/hosts.ini \
-                ${ANSIBLE_DIR}/patch.yml \
-                --extra-vars "env=test"
-                """
+                script {
+                    def json = readJSON file: "${PRE_SCAN}"
+
+                    def vulns = []
+                    json.Results.each { r ->
+                        if (r.Vulnerabilities) {
+                            r.Vulnerabilities.each {
+                                vulns << "${it.VulnerabilityID} (${it.Severity}) - ${it.PkgName}"
+                            }
+                        }
+                    }
+
+                    env.CVE_COUNT = vulns.size().toString()
+                    env.CVE_LIST = vulns.take(20).join("\n") // limit to avoid email overflow
+
+                    writeFile file: "cve-list.txt", text: env.CVE_LIST
+                }
             }
         }
 
-        // =====================================================
-        // 5. POST TRIVY SCAN
-        // =====================================================
-        stage('Trivy Post Scan') {
+        stage('Detect Upgradable Packages') {
+            steps {
+                script {
+                    def upgrades = sh(
+                        script: "docker exec ${TEST_CONT} apt list --upgradable 2>/dev/null | tail -n +2",
+                        returnStdout: true
+                    ).trim()
+
+                    env.UPGRADE_COUNT = upgrades ? upgrades.split("\n").size().toString() : "0"
+                    env.UPGRADE_LIST = upgrades.take(2000)
+
+                    writeFile file: "upgrade-list.txt", text: env.UPGRADE_LIST
+                }
+            }
+        }
+
+        stage('Patch TEST') {
+            when {
+                expression { env.SELECTED_ENV == 'test' }
+            }
+            steps {
+                sh "ansible-playbook patch.yml -l test"
+            }
+        }
+
+        stage('Post Scan') {
             steps {
                 sh """
                 echo "Running POST scan..."
-
-                docker commit ${CONTAINER_TEST} mail-test:post || true
-
-                trivy image \
-                  --format json \
-                  -o trivy-post.json \
-                  mail-test:post || true
+                docker commit ${TEST_CONT} ${IMAGE_NAME}:post
+                trivy image --severity CRITICAL,HIGH --format json -o ${POST_SCAN} ${IMAGE_NAME}:post
                 """
             }
         }
 
-        // =====================================================
-        // 6. COMPARE CVEs (PRE vs POST)
-        // =====================================================
         stage('Compare CVEs') {
             steps {
                 script {
+                    def pre = readFile("${PRE_SCAN}")
+                    def post = readFile("${POST_SCAN}")
 
-                    def preFile = readFile('trivy-pre.json')
-                    def postFile = readFile('trivy-post.json')
-
-                    def pre = new JsonSlurper().parseText(preFile)
-                    def post = new JsonSlurper().parseText(postFile)
-
-                    int preCount = 0
-                    int postCount = 0
-
-                    pre.Results.each { r ->
-                        r.Vulnerabilities?.each { preCount++ }
-                    }
-
-                    post.Results.each { r ->
-                        r.Vulnerabilities?.each { postCount++ }
-                    }
-
-                    env.PRE_CVE = preCount.toString()
-                    env.POST_CVE = postCount.toString()
-                    env.DIFF = (preCount - postCount).toString()
+                    env.CVE_DELTA = (pre.length() - post.length()).toString()
                 }
             }
         }
 
-        // =====================================================
-        // 7. EMAIL + APPROVAL
-        // =====================================================
-        stage('Send Report + Approval') {
+        stage('Send Approval Email') {
+            when {
+                expression { env.SELECTED_ENV == 'test' }
+            }
             steps {
-                script {
+                emailext(
+                    subject: "SECURITY PATCH APPROVAL REQUIRED",
+                    to: "susan.joffin@gmail.com",
+                    body: """
+========================================
+SECURITY PATCH REPORT (TEST)
 
-                    def approvalLink = "${env.BUILD_URL}input"
+CVE DETECTED: ${env.CVE_COUNT}
 
-                    emailext(
-                        to: "${params.EMAIL_TO}",
-                        subject: "🧪 DEVSECOPS REPORT - TEST ENV",
-                        mimeType: 'text/html',
-                        body: """
-<h2>🧪 Security Scan Report</h2>
+Top CVEs:
+${env.CVE_LIST}
 
-<h3>📊 CVE Summary</h3>
-<ul>
-<li>Before Patch: ${env.PRE_CVE}</li>
-<li>After Patch: ${env.POST_CVE}</li>
-<li>Improvement: ${env.DIFF}</li>
-</ul>
+PACKAGES TO UPGRADE: ${env.UPGRADE_COUNT}
 
-<h3>🚦 Approval Required for PROD</h3>
+${env.UPGRADE_LIST}
 
-<a href="${approvalLink}" style="padding:10px;background:green;color:white;">
-👉 APPROVE PRODUCTION
-</a>
+----------------------------------------
+Do you approve deployment to PRODUCTION?
+========================================
 """
-                    )
-                }
+                )
             }
         }
 
-        // =====================================================
-        // 8. PROD APPROVAL GATE
-        // =====================================================
-        stage('PROD Approval') {
+        stage('Manual Approval for PROD') {
+            when {
+                expression { env.SELECTED_ENV == 'test' }
+            }
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input message: "Approve deployment to PRODUCTION?"
@@ -166,22 +158,95 @@ pipeline {
             }
         }
 
-    }
-
-    // =====================================================
-    // POST ACTIONS
-    // =====================================================
-    post {
-        always {
-            echo "Pipeline completed"
+        stage('Backup Before PROD') {
+            when {
+                anyOf {
+                    expression { env.SELECTED_ENV == 'prod' }
+                    expression { env.SELECTED_ENV == 'test' }
+                }
+            }
+            steps {
+                sh """
+                echo "Creating PROD backup..."
+                docker commit ${PROD_CONT} ${IMAGE_NAME}:backup
+                """
+            }
         }
 
+        stage('Patch PROD') {
+            when {
+                anyOf {
+                    expression { env.SELECTED_ENV == 'prod' }
+                    expression { env.SELECTED_ENV == 'test' }
+                }
+            }
+            steps {
+                sh "ansible-playbook patch.yml -l prod"
+            }
+        }
+
+        stage('Verify PROD') {
+            steps {
+                script {
+                    def status = sh(
+                        script: "docker exec ${PROD_CONT} systemctl is-active exim || true",
+                        returnStdout: true
+                    ).trim()
+
+                    if (status != "active") {
+                        error("Service DOWN after patch → triggering rollback")
+                    }
+                }
+            }
+        }
+
+        stage('Rollback (if failure)') {
+            when {
+                expression { currentBuild.result == 'FAILURE' || params.FORCE_ROLLBACK }
+            }
+            steps {
+                sh """
+                echo "Rolling back PROD..."
+                docker stop ${PROD_CONT} || true
+                docker rm ${PROD_CONT} || true
+                docker run -d --name ${PROD_CONT} ${IMAGE_NAME}:backup
+                """
+            }
+        }
+
+        stage('Post PROD Email') {
+            steps {
+                emailext(
+                    subject: "PRODUCTION PATCH COMPLETED",
+                    to: "susan.joffin@gmail.com",
+                    body: """
+========================================
+PRODUCTION PATCH COMPLETED
+
+CVE BEFORE PATCH: ${env.CVE_COUNT}
+PACKAGES UPGRADED: ${env.UPGRADE_COUNT}
+
+STATUS: SUCCESS
+
+Rollback Available: YES
+========================================
+"""
+                )
+            }
+        }
+    }
+
+    post {
         failure {
             emailext(
-                to: "${params.EMAIL_TO}",
-                subject: "❌ PIPELINE FAILED",
-                body: "Check Jenkins logs. Rollback may be required."
+                subject: "PIPELINE FAILURE - ROLLBACK EXECUTED",
+                to: "susan.joffin@gmail.com",
+                body: "Pipeline failed. Rollback executed automatically."
             )
+        }
+
+        success {
+            echo "Pipeline completed successfully"
         }
     }
 }
