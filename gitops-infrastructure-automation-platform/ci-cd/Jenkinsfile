@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     triggers {
-        cron('H/10 * * * *') // Every 10 minutes
+        cron('H/10 * * * *')
     }
 
     parameters {
@@ -10,6 +10,11 @@ pipeline {
             name: 'ENV',
             choices: ['test', 'prod'],
             description: 'Select environment (default = test)'
+        )
+        booleanParam(
+            name: 'FORCE_ROLLBACK',
+            defaultValue: false,
+            description: 'Trigger rollback manually'
         )
     }
 
@@ -24,15 +29,8 @@ pipeline {
         stage('Init') {
             steps {
                 script {
-                    def isTimer = currentBuild.rawBuild.getCause(hudson.triggers.TimerTrigger$TimerTriggerCause)
-
-                    if (isTimer) {
-                        env.TARGET_ENV = "test"
-                        echo "Auto-trigger → forcing TEST"
-                    } else {
-                        env.TARGET_ENV = params.ENV ?: "test"
-                        echo "Manual trigger → ENV: ${env.TARGET_ENV}"
-                    }
+                    env.TARGET_ENV = params.ENV ?: "test"
+                    echo "Running in ENV: ${env.TARGET_ENV}"
                 }
             }
         }
@@ -40,7 +38,6 @@ pipeline {
         stage('PRE Scan') {
             steps {
                 sh '''
-                echo "Running PRE scan..."
                 docker commit ${TEST_CONTAINER} mail-server:pre
                 trivy image --severity CRITICAL,HIGH --format json -o trivy-pre.json mail-server:pre
                 '''
@@ -69,9 +66,7 @@ pipeline {
             steps {
                 script {
                     env.UPGRADE_COUNT = sh(
-                        script: """
-                        docker exec ${TEST_CONTAINER} bash -c "apt list --upgradable 2>/dev/null | wc -l"
-                        """,
+                        script: "docker exec ${TEST_CONTAINER} bash -c \"apt list --upgradable 2>/dev/null | wc -l\"",
                         returnStdout: true
                     ).trim()
                 }
@@ -79,12 +74,8 @@ pipeline {
         }
 
         stage('Patch TEST') {
-            when {
-                expression { env.TARGET_ENV == 'test' }
-            }
             steps {
                 sh '''
-                echo "Patching TEST..."
                 docker exec ${TEST_CONTAINER} apt update
                 docker exec ${TEST_CONTAINER} apt upgrade -y
                 '''
@@ -113,61 +104,76 @@ pipeline {
             }
         }
 
+        stage('Decision Gate') {
+            steps {
+                script {
+                    if (env.POST_CVE.toInteger() == 0) {
+                        env.AUTO_PROMOTE = "true"
+                        echo "No CVEs → Auto promote to PROD"
+                    } else {
+                        env.AUTO_PROMOTE = "false"
+                        echo "CVEs still exist → Approval required"
+                    }
+                }
+            }
+        }
+
         stage('Approval Email') {
+            when {
+                expression { env.AUTO_PROMOTE == "false" }
+            }
             steps {
                 emailext(
                     to: "${EMAIL}",
                     subject: "APPROVAL REQUIRED - CVE PATCH REPORT",
                     body: """
-PRE-CVE Count: ${env.CVE_COUNT}
-POST-CVE Count: ${env.POST_CVE}
-Upgradable Packages: ${env.UPGRADE_COUNT}
+PRE-CVE: ${env.CVE_COUNT}
+POST-CVE: ${env.POST_CVE}
+Packages: ${env.UPGRADE_COUNT}
 
 Top CVEs:
 ${env.CVE_LIST}
 
-➡ Please approve PROD deployment in Jenkins if results are acceptable.
+Approve PROD deployment in Jenkins.
 """
                 )
             }
         }
 
-        stage('Manual Approval for PROD') {
+        stage('Manual Approval') {
             when {
-                expression { env.TARGET_ENV == 'prod' }
+                expression { env.AUTO_PROMOTE == "false" }
             }
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
-                    input message: """
-Approve PROD patch?
-
-PRE-CVE: ${env.CVE_COUNT}
-POST-CVE: ${env.POST_CVE}
-Packages: ${env.UPGRADE_COUNT}
-"""
+                    input message: "Approve PROD patch?"
                 }
             }
         }
 
-        stage('Backup PROD') {
+        stage('Force Rollback (Manual)') {
             when {
-                expression { env.TARGET_ENV == 'prod' }
+                expression { params.FORCE_ROLLBACK == true }
             }
             steps {
                 sh '''
-                echo "Taking PROD backup..."
-                docker commit ${PROD_CONTAINER} mail-prod:backup
+                echo "Manual rollback triggered..."
+                docker stop ${PROD_CONTAINER} || true
+                docker rm ${PROD_CONTAINER} || true
+                docker run -d --name ${PROD_CONTAINER} mail-prod:backup
                 '''
             }
         }
 
-        stage('Patch PROD') {
-            when {
-                expression { env.TARGET_ENV == 'prod' }
+        stage('Backup PROD') {
+            steps {
+                sh 'docker commit ${PROD_CONTAINER} mail-prod:backup'
             }
+        }
+
+        stage('Patch PROD') {
             steps {
                 sh '''
-                echo "Patching PROD..."
                 docker exec ${PROD_CONTAINER} apt update
                 docker exec ${PROD_CONTAINER} apt upgrade -y
                 '''
@@ -175,9 +181,6 @@ Packages: ${env.UPGRADE_COUNT}
         }
 
         stage('Verify PROD') {
-            when {
-                expression { env.TARGET_ENV == 'prod' }
-            }
             steps {
                 script {
                     def status = sh(
@@ -186,19 +189,19 @@ Packages: ${env.UPGRADE_COUNT}
                     ).trim()
 
                     if (status != "active") {
-                        error("Service validation failed after patch")
+                        error("Service failed after patch")
                     }
                 }
             }
         }
 
-        stage('Rollback (if failure)') {
+        stage('Rollback (Auto if failure)') {
             when {
-                expression { currentBuild.currentResult == 'FAILURE' && env.TARGET_ENV == 'prod' }
+                expression { currentBuild.currentResult == 'FAILURE' }
             }
             steps {
                 sh '''
-                echo "Rolling back PROD..."
+                echo "Auto rollback..."
                 docker stop ${PROD_CONTAINER} || true
                 docker rm ${PROD_CONTAINER} || true
                 docker run -d --name ${PROD_CONTAINER} mail-prod:backup
@@ -207,15 +210,12 @@ Packages: ${env.UPGRADE_COUNT}
         }
 
         stage('PROD Success Email') {
-            when {
-                expression { env.TARGET_ENV == 'prod' }
-            }
             steps {
                 emailext(
                     to: "${EMAIL}",
                     subject: "PROD PATCH SUCCESS",
                     body: """
-✅ PRODUCTION PATCH COMPLETED
+Production patch completed.
 
 CVE Before: ${env.CVE_COUNT}
 CVE After: ${env.POST_CVE}
@@ -233,13 +233,7 @@ Status: SUCCESS
             emailext(
                 to: "${EMAIL}",
                 subject: "PIPELINE FAILED",
-                body: """
-❌ Pipeline Failed
-
-Check Jenkins logs immediately.
-
-Environment: ${env.TARGET_ENV}
-"""
+                body: "Pipeline failed. Check logs."
             )
         }
     }
