@@ -6,235 +6,216 @@ pipeline {
     }
 
     parameters {
-        choice(
-            name: 'ENV',
-            choices: ['test', 'prod'],
-            description: 'Select environment (default = test)'
-        )
-        booleanParam(
-            name: 'FORCE_ROLLBACK',
-            defaultValue: false,
-            description: 'Trigger rollback manually'
-        )
+        choice(name: 'ENV', choices: ['TEST', 'BOTH', 'PROD'], description: 'Default TEST')
+        string(name: 'EXCLUDE_CVES', defaultValue: '', description: 'Comma-separated CVEs to ignore')
+        booleanParam(name: 'FORCE_ROLLBACK', defaultValue: false, description: 'Force rollback')
     }
 
     environment {
-        TEST_CONTAINER = "mail-test"
-        PROD_CONTAINER = "mail-prod"
         EMAIL = "susan.joffin@gmail.com"
     }
 
     stages {
 
-        stage('Init') {
+        stage('Set ENV') {
             steps {
                 script {
-                    env.TARGET_ENV = params.ENV ?: "test"
-                    echo "Running in ENV: ${env.TARGET_ENV}"
+                    env.SELECTED_ENV = params.ENV ?: "TEST"
                 }
             }
         }
 
-        stage('PRE Scan') {
+        stage('PRE SCAN') {
             steps {
                 sh '''
-                docker commit ${TEST_CONTAINER} mail-server:pre
-                trivy image --severity CRITICAL,HIGH --format json -o trivy-pre.json mail-server:pre
+                docker commit mail-test mail-pre
+                trivy image --severity CRITICAL,HIGH -f json -o pre.json mail-pre
                 '''
             }
         }
 
-        stage('Extract CVE Data') {
-            steps {
-                script {
-                    env.CVE_COUNT = sh(
-                        script: "jq '[.Results[].Vulnerabilities[]?] | length' trivy-pre.json",
-                        returnStdout: true
-                    ).trim()
-
-                    env.CVE_LIST = sh(
-                        script: "jq -r '.Results[].Vulnerabilities[]? | \"\\(.VulnerabilityID) - \\(.PkgName)\"' trivy-pre.json | head -20",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "CVE Count: ${env.CVE_COUNT}"
-                }
-            }
-        }
-
-        stage('Detect Upgradable Packages') {
-            steps {
-                script {
-                    env.UPGRADE_COUNT = sh(
-                        script: "docker exec ${TEST_CONTAINER} bash -c \"apt list --upgradable 2>/dev/null | wc -l\"",
-                        returnStdout: true
-                    ).trim()
-                }
-            }
-        }
-
-        stage('Patch TEST') {
+        stage('Extract CVEs') {
             steps {
                 sh '''
-                docker exec ${TEST_CONTAINER} apt update
-                docker exec ${TEST_CONTAINER} apt upgrade -y
-                '''
-            }
-        }
+                apt-get update -y && apt-get install -y jq
 
-        stage('Post Scan') {
-            steps {
-                sh '''
-                docker commit ${TEST_CONTAINER} mail-server:post
-                trivy image --severity CRITICAL,HIGH --format json -o trivy-post.json mail-server:post
+                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' pre.json | sort -u > pre_cves.txt || true
+                echo $(cat pre_cves.txt | wc -l) > pre_count.txt
                 '''
-            }
-        }
-
-        stage('Compare CVEs') {
-            steps {
                 script {
-                    env.POST_CVE = sh(
-                        script: "jq '[.Results[].Vulnerabilities[]?] | length' trivy-post.json",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "POST CVE Count: ${env.POST_CVE}"
+                    env.PRE_COUNT = readFile('pre_count.txt').trim()
+                    env.TOP_CVES = sh(script: "head -20 pre_cves.txt", returnStdout: true)
                 }
             }
         }
 
-        stage('Decision Gate') {
+        stage('Detect Packages') {
+            steps {
+                sh '''
+                apt list --upgradable 2>/dev/null | tail -n +2 | awk -F/ '{print $1}' > packages.txt || true
+                echo $(cat packages.txt | wc -l) > pkg_count.txt
+                '''
+                script {
+                    env.PKG_COUNT = readFile('pkg_count.txt').trim()
+                    env.PACKAGES = readFile('packages.txt')
+                }
+            }
+        }
+
+        stage('PATCH TEST') {
+            when { expression { env.SELECTED_ENV in ["TEST","BOTH"] } }
+            steps {
+                sh 'ansible-playbook patch.yaml -i inventory/test | tee test_output.txt'
+            }
+        }
+
+        stage('Extract Test Report') {
             steps {
                 script {
-                    if (env.POST_CVE.toInteger() == 0) {
-                        env.AUTO_PROMOTE = "true"
-                        echo "No CVEs → Auto promote to PROD"
-                    } else {
-                        env.AUTO_PROMOTE = "false"
-                        echo "CVEs still exist → Approval required"
-                    }
+                    def log = readFile('test_output.txt')
+
+                    env.EXIM_STATUS = log.contains("Exim Running: active") ? "RUNNING" : "FAILED"
+                    env.SMTP_STATUS = log.contains("SMTP Port: OPEN") ? "OPEN" : "CLOSED"
+                    env.MAIL_STATUS = log.contains("Mail Sent: True") || log.contains("Mail Sent: true") ? "SUCCESS" : "FAILED"
+
+                    env.MAIL_LOG = sh(script: "grep -A5 'MAIL LOGS:' test_output.txt | tail -n 5", returnStdout: true)
+                }
+            }
+        }
+
+        stage('POST SCAN') {
+            steps {
+                sh '''
+                docker commit mail-test mail-post
+                trivy image --severity CRITICAL,HIGH -f json -o post.json mail-post
+
+                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' post.json | sort -u > post_cves.txt || true
+                echo $(cat post_cves.txt | wc -l) > post_count.txt
+                '''
+                script {
+                    env.POST_COUNT = readFile('post_count.txt').trim()
+                }
+            }
+        }
+
+        stage('CVE ANALYSIS') {
+            steps {
+                sh '''
+                comm -23 pre_cves.txt post_cves.txt > fixed.txt || true
+                comm -12 pre_cves.txt post_cves.txt > unfixed.txt || true
+
+                echo "${EXCLUDE_CVES}" | tr ',' '\\n' > excluded.txt || true
+                comm -23 unfixed.txt excluded.txt > blocking.txt || true
+                '''
+                script {
+                    env.FIXED_COUNT = sh(script: "cat fixed.txt | wc -l", returnStdout: true).trim()
+                    env.BLOCKING = sh(script: "cat blocking.txt | wc -l", returnStdout: true).trim()
                 }
             }
         }
 
         stage('Approval Email') {
-            when {
-                expression { env.AUTO_PROMOTE == "false" }
-            }
-            steps {
-                emailext(
-                    to: "${EMAIL}",
-                    subject: "APPROVAL REQUIRED - CVE PATCH REPORT",
-                    body: """
-PRE-CVE: ${env.CVE_COUNT}
-POST-CVE: ${env.POST_CVE}
-Packages: ${env.UPGRADE_COUNT}
-
-Top CVEs:
-${env.CVE_LIST}
-
-Approve PROD deployment in Jenkins.
-"""
-                )
-            }
-        }
-
-        stage('Manual Approval') {
-            when {
-                expression { env.AUTO_PROMOTE == "false" }
-            }
-            steps {
-                timeout(time: 30, unit: 'MINUTES') {
-                    input message: "Approve PROD patch?"
-                }
-            }
-        }
-
-        stage('Force Rollback (Manual)') {
-            when {
-                expression { params.FORCE_ROLLBACK == true }
-            }
-            steps {
-                sh '''
-                echo "Manual rollback triggered..."
-                docker stop ${PROD_CONTAINER} || true
-                docker rm ${PROD_CONTAINER} || true
-                docker run -d --name ${PROD_CONTAINER} mail-prod:backup
-                '''
-            }
-        }
-
-        stage('Backup PROD') {
-            steps {
-                sh 'docker commit ${PROD_CONTAINER} mail-prod:backup'
-            }
-        }
-
-        stage('Patch PROD') {
-            steps {
-                sh '''
-                docker exec ${PROD_CONTAINER} apt update
-                docker exec ${PROD_CONTAINER} apt upgrade -y
-                '''
-            }
-        }
-
-        stage('Verify PROD') {
+            when { expression { env.BLOCKING != "0" } }
             steps {
                 script {
-                    def status = sh(
-                        script: "docker exec ${PROD_CONTAINER} systemctl is-active exim || true",
-                        returnStdout: true
-                    ).trim()
 
-                    if (status != "active") {
-                        error("Service failed after patch")
-                    }
+                    def html = """
+                    <html><body style="font-family:Arial;background:#f4f6f8;">
+                    <div style="background:#2c3e50;color:white;padding:15px;">
+                    <h2>🚀 Patch Report</h2></div>
+
+                    <h3>🔐 CVE Summary</h3>
+                    <table border="1" cellpadding="5">
+                    <tr><td>PRE</td><td>${env.PRE_COUNT}</td></tr>
+                    <tr><td>POST</td><td>${env.POST_COUNT}</td></tr>
+                    <tr><td>FIXED</td><td style="color:green">${env.FIXED_COUNT}</td></tr>
+                    <tr><td>BLOCKING</td><td style="color:red">${env.BLOCKING}</td></tr>
+                    </table>
+
+                    <h3>⚠️ Top CVEs</h3>
+                    <pre>${env.TOP_CVES}</pre>
+
+                    <h3>📦 Packages (${env.PKG_COUNT})</h3>
+                    <pre>${env.PACKAGES}</pre>
+
+                    <h3>📡 Service</h3>
+                    <table border="1">
+                    <tr><td>Exim</td><td>${env.EXIM_STATUS}</td></tr>
+                    <tr><td>SMTP</td><td>${env.SMTP_STATUS}</td></tr>
+                    <tr><td>Mail</td><td>${env.MAIL_STATUS}</td></tr>
+                    </table>
+
+                    <h3>📨 Mail Logs</h3>
+                    <pre>${env.MAIL_LOG}</pre>
+
+                    <a href="${env.BUILD_URL}input" style="background:blue;color:white;padding:10px;">
+                    Approve PROD</a>
+
+                    </body></html>
+                    """
+
+                    emailext(
+                        to: "${env.EMAIL}",
+                        subject: "⚠ Approval Required",
+                        mimeType: 'text/html',
+                        body: html
+                    )
                 }
             }
         }
 
-        stage('Rollback (Auto if failure)') {
-            when {
-                expression { currentBuild.currentResult == 'FAILURE' }
+        stage('Approval') {
+            when { expression { env.BLOCKING != "0" } }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Approve PROD?"
+                }
             }
+        }
+
+        stage('Auto Promote') {
+            when { expression { env.BLOCKING == "0" } }
+            steps {
+                echo "Auto promoting to PROD"
+            }
+        }
+
+        stage('PATCH PROD') {
+            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
+            steps {
+                sh 'ansible-playbook patch.yaml -i inventory/prod'
+            }
+        }
+
+        stage('Rollback') {
+            when { expression { params.FORCE_ROLLBACK || currentBuild.currentResult == "FAILURE" } }
             steps {
                 sh '''
-                echo "Auto rollback..."
-                docker stop ${PROD_CONTAINER} || true
-                docker rm ${PROD_CONTAINER} || true
-                docker run -d --name ${PROD_CONTAINER} mail-prod:backup
+                docker stop mail-prod || true
+                docker rm mail-prod || true
+                docker run -d --name mail-prod backup-image
                 '''
             }
         }
 
-        stage('PROD Success Email') {
+        stage('Final Email') {
             steps {
-                emailext(
-                    to: "${EMAIL}",
-                    subject: "PROD PATCH SUCCESS",
-                    body: """
-Production patch completed.
-
-CVE Before: ${env.CVE_COUNT}
-CVE After: ${env.POST_CVE}
-Packages Upgraded: ${env.UPGRADE_COUNT}
-
-Status: SUCCESS
-"""
-                )
+                script {
+                    emailext(
+                        to: "${env.EMAIL}",
+                        subject: "✅ Patch Completed",
+                        mimeType: 'text/html',
+                        body: """
+                        <h2>SUCCESS</h2>
+                        <p>PRE: ${env.PRE_COUNT}</p>
+                        <p>POST: ${env.POST_COUNT}</p>
+                        <p>FIXED: ${env.FIXED_COUNT}</p>
+                        <p>Exim: ${env.EXIM_STATUS}</p>
+                        <p>Mail: ${env.MAIL_STATUS}</p>
+                        """
+                    )
+                }
             }
-        }
-    }
-
-    post {
-        failure {
-            emailext(
-                to: "${EMAIL}",
-                subject: "PIPELINE FAILED",
-                body: "Pipeline failed. Check logs."
-            )
         }
     }
 }

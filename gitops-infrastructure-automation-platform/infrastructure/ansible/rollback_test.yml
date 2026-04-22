@@ -1,0 +1,87 @@
+- name: Simulate Patch Failure and Auto Rollback
+  hosts: all
+  gather_facts: no
+  serial: 1
+
+  tasks:
+
+    # =====================================================
+    # 1. BACKUP
+    # =====================================================
+    - name: Create backup image
+      delegate_to: localhost
+      shell: docker commit {{ inventory_hostname }} backup_{{ inventory_hostname }}:latest
+
+    - name: Show backup created
+      debug:
+        msg: "Backup created for {{ inventory_hostname }}"
+
+    # =====================================================
+    # 2. PATCH
+    # =====================================================
+    - block:
+
+        - name: Update packages
+          delegate_to: localhost
+          shell: docker exec {{ inventory_hostname }} apt-get update && apt-get upgrade -y
+
+        - name: Restart container
+          delegate_to: localhost
+          shell: docker restart {{ inventory_hostname }}
+
+        - name: Wait for restart
+          pause:
+            seconds: 10
+
+        # =====================================================
+        # 3. 🔴 SIMULATE FAILURE
+        # =====================================================
+        - name: Simulate failure - stop Exim
+          delegate_to: localhost
+          shell: docker exec {{ inventory_hostname }} pkill -f exim
+
+        # =====================================================
+        # 4. VALIDATION (WILL FAIL)
+        # =====================================================
+        - name: Check Exim process
+          delegate_to: localhost
+          shell: docker exec {{ inventory_hostname }} pgrep -f exim
+          register: exim_check
+
+        - name: Fail if Exim not running
+          fail:
+            msg: "Exim is DOWN → triggering rollback"
+          when: exim_check.rc != 0
+
+      rescue:
+
+        # =====================================================
+        # 5. ROLLBACK
+        # =====================================================
+        - name: Stop failed container
+          delegate_to: localhost
+          shell: docker stop {{ inventory_hostname }}
+
+        - name: Remove failed container
+          delegate_to: localhost
+          shell: docker rm {{ inventory_hostname }}
+
+        - name: Restore container from backup
+          delegate_to: localhost
+          shell: docker run -d --name {{ inventory_hostname }} backup_{{ inventory_hostname }}:latest
+
+        - name: Wait after rollback
+          pause:
+            seconds: 10
+
+        # =====================================================
+        # 6. POST-ROLLBACK VALIDATION
+        # =====================================================
+        - name: Check Exim after rollback
+          delegate_to: localhost
+          shell: docker exec {{ inventory_hostname }} pgrep -f exim
+          register: rollback_check
+
+        - name: Final status
+          debug:
+            msg: "Rollback SUCCESS on {{ inventory_hostname }}"

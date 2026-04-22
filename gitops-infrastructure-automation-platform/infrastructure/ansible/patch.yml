@@ -1,135 +1,134 @@
-- name: Enterprise Patch, Validate & Report
+---
+- name: Patch + Validate Mail Server
   hosts: all
-  gather_facts: no
-  serial: 1   # ✅ one server at a time (safe rollout)
+  become: yes
 
   vars:
-    report_file: "/tmp/patch_report_{{ inventory_hostname }}.txt"
+    service_name: exim4
+    smtp_port: 25
+    test_mail_to: susan.joffin@gmail.com
 
   tasks:
 
-    # =====================================================
-    # 1. PRE-CHECK
-    # =====================================================
+  # =========================
+  # PRE CHECK
+  # =========================
+  - name: Check Exim status before patch
+    shell: systemctl is-active {{ service_name }} || true
+    register: exim_pre
 
-    - name: Check if Exim service is running
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} pgrep -f exim
-      register: exim_status
-      failed_when: false
+  - name: Check SMTP port before patch
+    shell: nc -zv 127.0.0.1 {{ smtp_port }} >/dev/null 2>&1 && echo OPEN || echo CLOSED
+    register: smtp_pre
 
-    - name: Save pre-check result
-      set_fact:
-        precheck: "{{ 'RUNNING' if exim_status.rc == 0 else 'NOT RUNNING' }}"
+  # =========================
+  # PATCHING
+  # =========================
+  - name: Update packages
+    apt:
+      update_cache: yes
+      upgrade: dist
+    register: patch_result
 
-    # =====================================================
-    # 2. STOP SERVICE BEFORE PATCH
-    # =====================================================
+  # =========================
+  # REBOOT IF REQUIRED
+  # =========================
+  - name: Check if reboot required
+    stat:
+      path: /var/run/reboot-required
+    register: reboot_flag
 
-    - name: Stop Exim service safely
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} pkill -f exim || true
+  - name: Reboot system if required
+    reboot:
+      reboot_timeout: 600
+    when: reboot_flag.stat.exists
 
-    # =====================================================
-    # 3. PATCH SYSTEM
-    # =====================================================
+  # =========================
+  # WAIT FOR SYSTEM
+  # =========================
+  - name: Wait for SSH
+    wait_for:
+      port: 22
+      delay: 10
+      timeout: 300
 
-    - name: Update package metadata (Debian)
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} apt-get update
-      ignore_errors: yes
+  # =========================
+  # WAIT FOR EXIM SERVICE
+  # =========================
+  - name: Wait for Exim to start
+    shell: systemctl is-active {{ service_name }}
+    register: exim_wait
+    retries: 10
+    delay: 10
+    until: exim_wait.stdout == "active"
 
-    - name: Upgrade packages (Debian)
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} apt-get upgrade -y
-      ignore_errors: yes
+  - name: Check SMTP port after patch
+    shell: nc -zv 127.0.0.1 {{ smtp_port }} >/dev/null 2>&1 && echo OPEN || echo CLOSED
+    register: smtp_post
 
-    - name: Upgrade packages (RHEL)
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} bash -c "dnf upgrade -y || yum update -y"
-      ignore_errors: yes
+  # =========================
+  # SEND TEST MAIL
+  # =========================
+  - name: Send test mail
+    shell: |
+      echo "Patch successful at $(date)" | mail -s "Patch Test Mail" {{ test_mail_to }}
+    register: mail_send
 
-    # =====================================================
-    # 4. REBOOT / RESTART
-    # =====================================================
+  - name: Wait for mail log
+    pause:
+      seconds: 5
 
-    - name: Restart container (simulate reboot)
-      delegate_to: localhost
-      shell: docker restart {{ inventory_hostname }}
+  - name: Get latest mail log
+    shell: tail -n 5 /var/log/exim4/mainlog
+    register: mail_log
 
-    - name: Wait for system to stabilize
-      pause:
-        seconds: 15
+  # =========================
+  # FINAL STATUS
+  # =========================
+  - name: Set final status
+    set_fact:
+      final_status: >-
+        {% if exim_wait.stdout == "active" and smtp_post.stdout == "OPEN" %}
+        SUCCESS
+        {% else %}
+        FAILED
+        {% endif %}
 
-    # =====================================================
-    # 5. POST-VALIDATION
-    # =====================================================
+  # =========================
+  # REPORT OUTPUT (IMPORTANT)
+  # =========================
+  - name: Display patch report
+    debug:
+      msg: |
+        =====================================
+        PATCH REPORT
+        Host: {{ inventory_hostname }}
 
-    - name: Check Exim process after reboot
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} pgrep -f exim || true
-      register: exim_post
+        PRE-CHECK:
+        Exim Status Before Patch: {{ exim_pre.stdout }}
+        SMTP Before: {{ smtp_pre.stdout }}
 
-    - name: Check SMTP port
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} sh -c "netstat -tlnp | grep :25"
-      register: smtp_check
-      failed_when: false
+        PATCH:
+        Packages Updated: {{ patch_result.changed }}
 
-    - name: Send test email
-      delegate_to: localhost
-      shell: |
-        docker exec {{ inventory_hostname }} bash -c \
-        "echo 'PATCH SUCCESS - SYSTEM HEALTHY' | mail -s 'PATCH VALIDATION' root@localhost"
-      register: mail_test
-      failed_when: false
+        POST-CHECK:
+        Exim Running: {{ exim_wait.stdout }}
+        SMTP Port: {{ smtp_post.stdout }}
 
-    - name: Fetch mail logs
-      delegate_to: localhost
-      shell: docker exec {{ inventory_hostname }} tail -n 20 /var/log/exim4/mainlog
-      register: mail_logs
-      failed_when: false
+        MAIL TEST:
+        Mail Sent: {{ mail_send.rc == 0 }}
 
-    # =====================================================
-    # 6. REPORT GENERATION
-    # =====================================================
+        MAIL LOGS:
+        {{ mail_log.stdout }}
 
-    - name: Create patch report
-      delegate_to: localhost
-      copy:
-        dest: "{{ report_file }}"
-        content: |
-          =====================================
-          PATCH REPORT
-          Host: {{ inventory_hostname }}
-          
-          PRE-CHECK:
-          Exim Status Before Patch: {{ precheck }}
+        STATUS:
+        {{ final_status }}
+        =====================================
 
-          POST-CHECK:
-          Exim Running: {{ 'YES' if exim_post.rc == 0 else 'NO' }}
-          SMTP Port: {{ 'OPEN' if smtp_check.rc == 0 else 'CLOSED' }}
-
-          MAIL TEST:
-          {{ mail_test.stdout | default('No output') }}
-
-          MAIL LOGS:
-          {{ mail_logs.stdout | default('No logs') }}
-
-          STATUS:
-          {{ 'SUCCESS' if exim_post.rc == 0 and smtp_check.rc == 0 else 'FAILED' }}
-
-          =====================================
-
-    - name: Display report
-      debug:
-        msg: "{{ lookup('file', report_file) }}"
-
-    # =====================================================
-    # 7. FAILURE HANDLING (ENTERPRISE ADD)
-    # =====================================================
-
-    - name: Fail if validation failed
-      fail:
-        msg: "Post-validation failed on {{ inventory_hostname }}"
-      when: exim_post.rc != 0 or smtp_check.rc != 0
+  # =========================
+  # FAIL IF BROKEN
+  # =========================
+  - name: Fail if validation failed
+    fail:
+      msg: "Service failed after patch"
+    when: final_status != "SUCCESS"
