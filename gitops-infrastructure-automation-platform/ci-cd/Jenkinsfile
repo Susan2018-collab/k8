@@ -29,7 +29,7 @@ pipeline {
         }
 
         /* =========================
-           PRE SCAN (BASELINE)
+           PRE SCAN
         ========================= */
         stage('PRE SCAN') {
             steps {
@@ -137,7 +137,7 @@ pipeline {
         }
 
         /* =========================
-           TEST APPROVAL EMAIL
+           TEST EMAIL (WITH APPROVE PROD LINK FIXED)
         ========================= */
         stage('Approval Email') {
             when { expression { env.BLOCKING != "0" } }
@@ -169,12 +169,23 @@ pipeline {
 
                         <h3>📨 Mail Logs</h3>
                         <pre>${env.MAIL_LOG}</pre>
+
+                        <hr>
+
+                        <h3>🚀 Approve PROD</h3>
+                        <a href="${env.BUILD_URL}input"
+                           style="padding:10px;background:green;color:white;text-decoration:none;">
+                           APPROVE PROD DEPLOYMENT
+                        </a>
                         """
                     )
                 }
             }
         }
 
+        /* =========================
+           APPROVAL GATE
+        ========================= */
         stage('Approval') {
             when { expression { env.BLOCKING != "0" } }
             steps {
@@ -192,7 +203,7 @@ pipeline {
         }
 
         /* =========================
-           PROD TRIVY SCAN
+           PROD SCAN
         ========================= */
         stage('Trivy Scan PROD') {
             when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
@@ -255,7 +266,7 @@ pipeline {
         }
 
         /* =========================
-           FINAL REPORT (PROD + TEST SAME FORMAT)
+           FINAL EMAIL (PROD + BUILD + LOG LINKS ADDED)
         ========================= */
         stage('Final Email') {
             steps {
@@ -287,6 +298,12 @@ pipeline {
 
                         <h3>📨 Mail Logs</h3>
                         <pre>${env.MAIL_LOG}</pre>
+
+                        <hr>
+
+                        <h3>🔗 Jenkins Links</h3>
+                        <p><a href="${env.BUILD_URL}">🔍 Open Build</a></p>
+                        <p><a href="${env.BUILD_URL}console">📄 Console Logs</a></p>
                         """
                     )
                 }
