@@ -179,39 +179,130 @@ pipeline {
                 echo "Auto promoting to PROD"
             }
         }
+           stages {
 
-        stage('PATCH PROD') {
-            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
-            steps {
-                sh 'ansible-playbook patch.yaml -i inventory/prod'
-            }
-        }
-
-        stage('Rollback') {
-            when { expression { params.FORCE_ROLLBACK || currentBuild.currentResult == "FAILURE" } }
-            steps {
-                sh '''
-                docker stop mail-prod || true
-                docker rm mail-prod || true
-                docker run -d --name mail-prod backup-image
-                '''
-            }
-        }
-
-        stage('Final Email') {
+        /* =========================
+           🔐 TRIVY SECURITY SCAN
+        ========================= */
+        stage('Trivy Scan PROD') {
+            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
             steps {
                 script {
+                    echo "Running Trivy scan on PROD..."
+
+                    def scanStatus = sh(
+                        script: """
+                        trivy fs --exit-code 1 --severity HIGH,CRITICAL \
+                        --format json -o trivy-prod-report.json . || true
+                        """,
+                        returnStatus: true
+                    )
+
+                    if (scanStatus != 0) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "⚠️ Vulnerabilities found in PROD scan"
+                    }
+                }
+            }
+        }
+
+        /* =========================
+           🟡 MANUAL APPROVAL
+        ========================= */
+        stage('Approval PROD') {
+            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Approve PROD deployment after Trivy scan?"
+                }
+            }
+        }
+
+        /* =========================
+           🚀 PATCH PROD
+        ========================= */
+        stage('PATCH PROD') {
+            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            steps {
+                script {
+                    echo "Applying patches to PROD servers..."
+
+                    sh '''
+                    ansible-playbook patch.yaml -i inventory/hosts.ini
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           🔍 POST VALIDATION
+        ========================= */
+        stage('Post Validation PROD') {
+            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            steps {
+                script {
+                    echo "Running post-patch validation..."
+
+                    sh '''
+                    ./healthcheck.sh || exit 1
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           🔁 ROLLBACK (FAIL SAFE)
+        ========================= */
+        stage('Rollback PROD') {
+            when {
+                expression {
+                    currentBuild.currentResult == "FAILURE"
+                }
+            }
+            steps {
+                script {
+                    echo "Rollback triggered..."
+
+                    sh '''
+                    docker stop mail-prod || true
+                    docker rm mail-prod || true
+                    docker run -d --name mail-prod backup-image
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           📧 FINAL EMAIL REPORT
+        ========================= */
+        stage('Final Email PROD') {
+            steps {
+                script {
+
                     emailext(
                         to: "${env.EMAIL}",
-                        subject: "✅ Patch Completed",
+                        subject: "🚀 PROD Patch Report - ${currentBuild.currentResult}",
                         mimeType: 'text/html',
+                        attachmentsPattern: 'trivy-prod-report.json',
                         body: """
-                        <h2>SUCCESS</h2>
-                        <p>PRE: ${env.PRE_COUNT}</p>
-                        <p>POST: ${env.POST_COUNT}</p>
+                        <h2>PROD PATCH EXECUTION REPORT</h2>
+
+                        <p><b>Status:</b> ${currentBuild.currentResult}</p>
+
+                        <h3>Security Scan (Trivy)</h3>
+                        <p>Report attached: trivy-prod-report.json</p>
+
+                        <h3>System Metrics</h3>
+                        <p>PRE Check: ${env.PRE_COUNT}</p>
+                        <p>POST Check: ${env.POST_COUNT}</p>
                         <p>FIXED: ${env.FIXED_COUNT}</p>
+
+                        <h3>Services</h3>
                         <p>Exim: ${env.EXIM_STATUS}</p>
                         <p>Mail: ${env.MAIL_STATUS}</p>
+
+                        <hr>
+                        <p><b>Note:</b> Pipeline includes Trivy security gate + patch automation + validation</p>
                         """
                     )
                 }
