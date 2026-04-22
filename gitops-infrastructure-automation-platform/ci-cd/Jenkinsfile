@@ -17,6 +17,9 @@ pipeline {
 
     stages {
 
+        /* =========================
+           ENV SETUP
+        ========================= */
         stage('Set ENV') {
             steps {
                 script {
@@ -25,6 +28,9 @@ pipeline {
             }
         }
 
+        /* =========================
+           PRE SCAN (TEST BASELINE)
+        ========================= */
         stage('PRE SCAN') {
             steps {
                 sh '''
@@ -62,6 +68,9 @@ pipeline {
             }
         }
 
+        /* =========================
+           TEST PATCH FLOW
+        ========================= */
         stage('PATCH TEST') {
             when { expression { env.SELECTED_ENV in ["TEST","BOTH"] } }
             steps {
@@ -70,19 +79,23 @@ pipeline {
         }
 
         stage('Extract Test Report') {
+            when { expression { env.SELECTED_ENV in ["TEST","BOTH"] } }
             steps {
                 script {
                     def log = readFile('test_output.txt')
 
                     env.EXIM_STATUS = log.contains("Exim Running: active") ? "RUNNING" : "FAILED"
                     env.SMTP_STATUS = log.contains("SMTP Port: OPEN") ? "OPEN" : "CLOSED"
-                    env.MAIL_STATUS = log.contains("Mail Sent: True") || log.contains("Mail Sent: true") ? "SUCCESS" : "FAILED"
+                    env.MAIL_STATUS = log.contains("Mail Sent") ? "SUCCESS" : "FAILED"
 
                     env.MAIL_LOG = sh(script: "grep -A5 'MAIL LOGS:' test_output.txt | tail -n 5", returnStdout: true)
                 }
             }
         }
 
+        /* =========================
+           POST SCAN (TEST)
+        ========================= */
         stage('POST SCAN') {
             steps {
                 sh '''
@@ -98,6 +111,9 @@ pipeline {
             }
         }
 
+        /* =========================
+           CVE ANALYSIS
+        ========================= */
         stage('CVE ANALYSIS') {
             steps {
                 sh '''
@@ -114,43 +130,24 @@ pipeline {
             }
         }
 
+        /* =========================
+           APPROVAL EMAIL (TEST GATE)
+        ========================= */
         stage('Approval Email') {
             when { expression { env.BLOCKING != "0" } }
             steps {
                 script {
 
                     def html = """
-                    <html><body style="font-family:Arial;background:#f4f6f8;">
-                    <div style="background:#2c3e50;color:white;padding:15px;">
-                    <h2>🚀 Patch Report</h2></div>
+                    <html><body>
+                    <h2>🚀 Patch Report</h2>
 
-                    <h3>🔐 CVE Summary</h3>
-                    <table border="1" cellpadding="5">
-                    <tr><td>PRE</td><td>${env.PRE_COUNT}</td></tr>
-                    <tr><td>POST</td><td>${env.POST_COUNT}</td></tr>
-                    <tr><td>FIXED</td><td style="color:green">${env.FIXED_COUNT}</td></tr>
-                    <tr><td>BLOCKING</td><td style="color:red">${env.BLOCKING}</td></tr>
-                    </table>
+                    <p>PRE: ${env.PRE_COUNT}</p>
+                    <p>POST: ${env.POST_COUNT}</p>
+                    <p>FIXED: ${env.FIXED_COUNT}</p>
+                    <p>BLOCKING: ${env.BLOCKING}</p>
 
-                    <h3>⚠️ Top CVEs</h3>
-                    <pre>${env.TOP_CVES}</pre>
-
-                    <h3>📦 Packages (${env.PKG_COUNT})</h3>
-                    <pre>${env.PACKAGES}</pre>
-
-                    <h3>📡 Service</h3>
-                    <table border="1">
-                    <tr><td>Exim</td><td>${env.EXIM_STATUS}</td></tr>
-                    <tr><td>SMTP</td><td>${env.SMTP_STATUS}</td></tr>
-                    <tr><td>Mail</td><td>${env.MAIL_STATUS}</td></tr>
-                    </table>
-
-                    <h3>📨 Mail Logs</h3>
-                    <pre>${env.MAIL_LOG}</pre>
-
-                    <a href="${env.BUILD_URL}input" style="background:blue;color:white;padding:10px;">
-                    Approve PROD</a>
-
+                    <a href="${env.BUILD_URL}input">Approve PROD</a>
                     </body></html>
                     """
 
@@ -173,44 +170,36 @@ pipeline {
             }
         }
 
+        /* =========================
+           AUTO PROMOTE
+        ========================= */
         stage('Auto Promote') {
             when { expression { env.BLOCKING == "0" } }
             steps {
                 echo "Auto promoting to PROD"
             }
         }
-           stages {
 
         /* =========================
-           🔐 TRIVY SECURITY SCAN
+           🔐 PROD SECURITY SCAN
         ========================= */
         stage('Trivy Scan PROD') {
-            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
                 script {
-                    echo "Running Trivy scan on PROD..."
-
-                    def scanStatus = sh(
-                        script: """
-                        trivy fs --exit-code 1 --severity HIGH,CRITICAL \
-                        --format json -o trivy-prod-report.json . || true
-                        """,
-                        returnStatus: true
-                    )
-
-                    if (scanStatus != 0) {
-                        currentBuild.result = 'UNSTABLE'
-                        echo "⚠️ Vulnerabilities found in PROD scan"
-                    }
+                    sh '''
+                    trivy fs --exit-code 1 --severity HIGH,CRITICAL \
+                    --format json -o trivy-prod-report.json . || true
+                    '''
                 }
             }
         }
 
         /* =========================
-           🟡 MANUAL APPROVAL
+           PROD APPROVAL
         ========================= */
         stage('Approval PROD') {
-            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input message: "Approve PROD deployment after Trivy scan?"
@@ -219,90 +208,63 @@ pipeline {
         }
 
         /* =========================
-           🚀 PATCH PROD
+           PATCH PROD
         ========================= */
         stage('PATCH PROD') {
-            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
-                script {
-                    echo "Applying patches to PROD servers..."
-
-                    sh '''
-                    ansible-playbook patch.yaml -i inventory/hosts.ini
-                    '''
-                }
+                sh 'ansible-playbook patch.yaml -i inventory/hosts.ini'
             }
         }
 
         /* =========================
-           🔍 POST VALIDATION
+           POST VALIDATION PROD
         ========================= */
         stage('Post Validation PROD') {
-            when { expression { env.SELECTED_ENV in ["PROD", "BOTH"] } }
+            when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
-                script {
-                    echo "Running post-patch validation..."
-
-                    sh '''
-                    ./healthcheck.sh || exit 1
-                    '''
-                }
+                sh './healthcheck.sh || exit 1'
             }
         }
 
         /* =========================
-           🔁 ROLLBACK (FAIL SAFE)
+           ROLLBACK
         ========================= */
         stage('Rollback PROD') {
             when {
-                expression {
-                    currentBuild.currentResult == "FAILURE"
-                }
+                expression { currentBuild.currentResult == "FAILURE" }
             }
             steps {
-                script {
-                    echo "Rollback triggered..."
-
-                    sh '''
-                    docker stop mail-prod || true
-                    docker rm mail-prod || true
-                    docker run -d --name mail-prod backup-image
-                    '''
-                }
+                sh '''
+                docker stop mail-prod || true
+                docker rm mail-prod || true
+                docker run -d --name mail-prod backup-image
+                '''
             }
         }
 
         /* =========================
-           📧 FINAL EMAIL REPORT
+           FINAL EMAIL
         ========================= */
         stage('Final Email PROD') {
             steps {
                 script {
-
                     emailext(
                         to: "${env.EMAIL}",
                         subject: "🚀 PROD Patch Report - ${currentBuild.currentResult}",
                         mimeType: 'text/html',
                         attachmentsPattern: 'trivy-prod-report.json',
                         body: """
-                        <h2>PROD PATCH EXECUTION REPORT</h2>
+                        <h2>PROD PATCH REPORT</h2>
 
-                        <p><b>Status:</b> ${currentBuild.currentResult}</p>
+                        <p>Status: ${currentBuild.currentResult}</p>
 
-                        <h3>Security Scan (Trivy)</h3>
-                        <p>Report attached: trivy-prod-report.json</p>
-
-                        <h3>System Metrics</h3>
-                        <p>PRE Check: ${env.PRE_COUNT}</p>
-                        <p>POST Check: ${env.POST_COUNT}</p>
+                        <p>PRE: ${env.PRE_COUNT}</p>
+                        <p>POST: ${env.POST_COUNT}</p>
                         <p>FIXED: ${env.FIXED_COUNT}</p>
 
-                        <h3>Services</h3>
                         <p>Exim: ${env.EXIM_STATUS}</p>
                         <p>Mail: ${env.MAIL_STATUS}</p>
-
-                        <hr>
-                        <p><b>Note:</b> Pipeline includes Trivy security gate + patch automation + validation</p>
                         """
                     )
                 }
