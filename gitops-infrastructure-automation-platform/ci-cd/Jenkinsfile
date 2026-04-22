@@ -18,7 +18,7 @@ pipeline {
     stages {
 
         /* =========================
-           ENV SETUP
+           SET ENV
         ========================= */
         stage('Set ENV') {
             steps {
@@ -29,7 +29,7 @@ pipeline {
         }
 
         /* =========================
-           PRE SCAN (TEST BASELINE)
+           PRE SCAN (BASELINE)
         ========================= */
         stage('PRE SCAN') {
             steps {
@@ -45,12 +45,16 @@ pipeline {
                 sh '''
                 apt-get update -y && apt-get install -y jq
 
-                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' pre.json | sort -u > pre_cves.txt || true
+                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' pre.json \
+                | sort -u > pre_cves.txt || true
+
                 echo $(cat pre_cves.txt | wc -l) > pre_count.txt
+
+                head -20 pre_cves.txt > top_cves.txt
                 '''
                 script {
                     env.PRE_COUNT = readFile('pre_count.txt').trim()
-                    env.TOP_CVES = sh(script: "head -20 pre_cves.txt", returnStdout: true)
+                    env.TOP_CVES = readFile('top_cves.txt')
                 }
             }
         }
@@ -69,7 +73,7 @@ pipeline {
         }
 
         /* =========================
-           TEST PATCH FLOW
+           TEST PATCH
         ========================= */
         stage('PATCH TEST') {
             when { expression { env.SELECTED_ENV in ["TEST","BOTH"] } }
@@ -88,13 +92,13 @@ pipeline {
                     env.SMTP_STATUS = log.contains("SMTP Port: OPEN") ? "OPEN" : "CLOSED"
                     env.MAIL_STATUS = log.contains("Mail Sent") ? "SUCCESS" : "FAILED"
 
-                    env.MAIL_LOG = sh(script: "grep -A5 'MAIL LOGS:' test_output.txt | tail -n 5", returnStdout: true)
+                    env.MAIL_LOG = sh(script: "grep -A5 'MAIL LOGS:' test_output.txt || true", returnStdout: true)
                 }
             }
         }
 
         /* =========================
-           POST SCAN (TEST)
+           POST SCAN
         ========================= */
         stage('POST SCAN') {
             steps {
@@ -102,7 +106,9 @@ pipeline {
                 docker commit mail-test mail-post
                 trivy image --severity CRITICAL,HIGH -f json -o post.json mail-post
 
-                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' post.json | sort -u > post_cves.txt || true
+                jq -r '.Results[].Vulnerabilities[].VulnerabilityID' post.json \
+                | sort -u > post_cves.txt || true
+
                 echo $(cat post_cves.txt | wc -l) > post_count.txt
                 '''
                 script {
@@ -131,31 +137,39 @@ pipeline {
         }
 
         /* =========================
-           APPROVAL EMAIL (TEST GATE)
+           TEST APPROVAL EMAIL
         ========================= */
         stage('Approval Email') {
             when { expression { env.BLOCKING != "0" } }
             steps {
                 script {
-
-                    def html = """
-                    <html><body>
-                    <h2>🚀 Patch Report</h2>
-
-                    <p>PRE: ${env.PRE_COUNT}</p>
-                    <p>POST: ${env.POST_COUNT}</p>
-                    <p>FIXED: ${env.FIXED_COUNT}</p>
-                    <p>BLOCKING: ${env.BLOCKING}</p>
-
-                    <a href="${env.BUILD_URL}input">Approve PROD</a>
-                    </body></html>
-                    """
-
                     emailext(
-                        to: "${env.EMAIL}",
-                        subject: "⚠ Approval Required",
+                        to: env.EMAIL,
+                        subject: "🧪 TEST Patch Report",
                         mimeType: 'text/html',
-                        body: html
+                        body: """
+                        <h2>🚀 Patch Report (TEST)</h2>
+
+                        <h3>🔐 CVE Summary</h3>
+                        <p>PRE: ${env.PRE_COUNT}</p>
+                        <p>POST: ${env.POST_COUNT}</p>
+                        <p>FIXED: ${env.FIXED_COUNT}</p>
+                        <p>BLOCKING: ${env.BLOCKING}</p>
+
+                        <h3>⚠️ Top CVEs</h3>
+                        <pre>${env.TOP_CVES}</pre>
+
+                        <h3>📦 Packages</h3>
+                        <pre>${env.PACKAGES}</pre>
+
+                        <h3>📡 Service</h3>
+                        <p>Exim: ${env.EXIM_STATUS}</p>
+                        <p>SMTP: ${env.SMTP_STATUS}</p>
+                        <p>Mail: ${env.MAIL_STATUS}</p>
+
+                        <h3>📨 Mail Logs</h3>
+                        <pre>${env.MAIL_LOG}</pre>
+                        """
                     )
                 }
             }
@@ -170,9 +184,6 @@ pipeline {
             }
         }
 
-        /* =========================
-           AUTO PROMOTE
-        ========================= */
         stage('Auto Promote') {
             when { expression { env.BLOCKING == "0" } }
             steps {
@@ -181,17 +192,15 @@ pipeline {
         }
 
         /* =========================
-           🔐 PROD SECURITY SCAN
+           PROD TRIVY SCAN
         ========================= */
         stage('Trivy Scan PROD') {
             when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
-                script {
-                    sh '''
-                    trivy fs --exit-code 1 --severity HIGH,CRITICAL \
-                    --format json -o trivy-prod-report.json . || true
-                    '''
-                }
+                sh '''
+                trivy fs --exit-code 1 --severity HIGH,CRITICAL \
+                --format json -o trivy-prod-report.json . || true
+                '''
             }
         }
 
@@ -202,7 +211,7 @@ pipeline {
             when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
-                    input message: "Approve PROD deployment after Trivy scan?"
+                    input message: "Approve PROD deployment?"
                 }
             }
         }
@@ -218,7 +227,7 @@ pipeline {
         }
 
         /* =========================
-           POST VALIDATION PROD
+           POST VALIDATION
         ========================= */
         stage('Post Validation PROD') {
             when { expression { env.SELECTED_ENV in ["PROD","BOTH"] } }
@@ -232,7 +241,9 @@ pipeline {
         ========================= */
         stage('Rollback PROD') {
             when {
-                expression { currentBuild.currentResult == "FAILURE" }
+                expression {
+                    currentBuild.currentResult == "FAILURE" || params.FORCE_ROLLBACK
+                }
             }
             steps {
                 sh '''
@@ -244,27 +255,38 @@ pipeline {
         }
 
         /* =========================
-           FINAL EMAIL
+           FINAL REPORT (PROD + TEST SAME FORMAT)
         ========================= */
-        stage('Final Email PROD') {
+        stage('Final Email') {
             steps {
                 script {
                     emailext(
-                        to: "${env.EMAIL}",
-                        subject: "🚀 PROD Patch Report - ${currentBuild.currentResult}",
+                        to: env.EMAIL,
+                        subject: "🚀 Patch Report - ${currentBuild.currentResult}",
                         mimeType: 'text/html',
                         attachmentsPattern: 'trivy-prod-report.json',
                         body: """
-                        <h2>PROD PATCH REPORT</h2>
+                        <h2>🚀 Patch Report</h2>
 
-                        <p>Status: ${currentBuild.currentResult}</p>
-
+                        <h3>🔐 CVE Summary</h3>
                         <p>PRE: ${env.PRE_COUNT}</p>
                         <p>POST: ${env.POST_COUNT}</p>
                         <p>FIXED: ${env.FIXED_COUNT}</p>
+                        <p>BLOCKING: ${env.BLOCKING}</p>
 
+                        <h3>⚠️ Top CVEs</h3>
+                        <pre>${env.TOP_CVES}</pre>
+
+                        <h3>📦 Packages (${env.PKG_COUNT})</h3>
+                        <pre>${env.PACKAGES}</pre>
+
+                        <h3>📡 Service</h3>
                         <p>Exim: ${env.EXIM_STATUS}</p>
+                        <p>SMTP: ${env.SMTP_STATUS}</p>
                         <p>Mail: ${env.MAIL_STATUS}</p>
+
+                        <h3>📨 Mail Logs</h3>
+                        <pre>${env.MAIL_LOG}</pre>
                         """
                     )
                 }
