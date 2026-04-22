@@ -24,7 +24,7 @@ pipeline {
     stages {
 
         // =====================================================
-        // 1. Checkout
+        // Checkout
         // =====================================================
         stage('Checkout') {
             steps {
@@ -33,23 +33,52 @@ pipeline {
         }
 
         // =====================================================
-        // 2. TEST: Backup + Patch + Scan
+        // Install Trivy (FIXED)
         // =====================================================
-        stage('TEST: Backup + Patch + Scan') {
+        stage('Install Trivy') {
             steps {
                 sh """
-                echo "Backing up TEST..."
+                set -e
+
+                if ! command -v trivy >/dev/null 2>&1; then
+                    echo "Installing Trivy..."
+
+                    apt-get update -y || true
+                    apt-get install -y curl || true
+
+                    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+                    | sh -s -- -b /usr/local/bin
+                fi
+
+                trivy --version
+                """
+            }
+        }
+
+        // =====================================================
+        // TEST: Backup + Patch
+        // =====================================================
+        stage('TEST Patch + Backup') {
+            steps {
+                sh """
+                echo "Backup TEST"
                 docker commit ${CONTAINER_TEST} ${BACKUP_IMAGE_TEST} || true
 
-                echo "Running TEST patch..."
+                echo "Patch TEST"
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=test"
                 """
+            }
+        }
 
+        // =====================================================
+        // TEST: Trivy Scan
+        // =====================================================
+        stage('TEST Trivy Scan') {
+            steps {
                 sh """
-                echo "Running Trivy scan (TEST)..."
                 trivy image \
                     --format json \
                     -o trivy-test.json \
@@ -65,11 +94,16 @@ pipeline {
         }
 
         // =====================================================
-        // 3. Parse TEST CVE Report
+        // Parse TEST CVE (SAFE)
         // =====================================================
-        stage('Parse TEST CVE Report') {
+        stage('Parse TEST CVE') {
             steps {
                 script {
+
+                    if (!fileExists("trivy-test.json")) {
+                        env.TEST_CVE_SUMMARY = "No scan data available"
+                        return
+                    }
 
                     def json = readFile("trivy-test.json")
                     def parsed = new JsonSlurper().parseText(json)
@@ -101,9 +135,9 @@ LOW: ${low}
         }
 
         // =====================================================
-        // 4. TEST Email + Approval Link
+        // TEST Email + PROD Approval Link
         // =====================================================
-        stage('Send TEST Report + PROD Approval Link') {
+        stage('Send TEST Report + Approval') {
             steps {
                 script {
 
@@ -111,7 +145,7 @@ LOW: ${low}
 
                     emailext(
                         to: "${params.EMAIL_TO}",
-                        subject: "🧪 TEST COMPLETE - APPROVAL FOR PROD REQUIRED",
+                        subject: "🧪 TEST COMPLETE - APPROVAL REQUIRED",
                         mimeType: 'text/html',
 
                         body: """
@@ -120,21 +154,18 @@ LOW: ${low}
 <h3>🔐 CVE Summary</h3>
 <pre>${env.TEST_CVE_SUMMARY}</pre>
 
-<h3>🛠 What was done</h3>
+<h3>🛠 Actions</h3>
 <ul>
 <li>Backup created</li>
-<li>Patches applied (TEST)</li>
-<li>Trivy scan executed</li>
+<li>Patches applied</li>
+<li>Trivy scan completed</li>
 </ul>
 
-<h3>🚦 Next Step</h3>
-<p>Approve production deployment:</p>
+<h3>🚦 Approve PROD Deployment</h3>
 
-<a href="${approvalLink}" style="padding:10px 15px;background:#28a745;color:white;text-decoration:none;">
-👉 APPROVE PROD DEPLOYMENT
+<a href="${approvalLink}" style="padding:10px 14px;background:#28a745;color:white;text-decoration:none;">
+👉 APPROVE PRODUCTION
 </a>
-
-<p>This approval triggers production patching.</p>
 """,
 
                         attachmentsPattern: """
@@ -147,34 +178,40 @@ trivy-test.json
         }
 
         // =====================================================
-        // 5. PROD APPROVAL GATE
+        // PROD Approval Gate
         // =====================================================
-        stage('PROD Approval Gate') {
+        stage('PROD Approval') {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
-                    input message: "Approve deployment to PRODUCTION?"
+                    input message: "Approve PRODUCTION deployment?"
                 }
             }
         }
 
         // =====================================================
-        // 6. PROD Backup + Patch + Scan
+        // PROD Backup + Patch
         // =====================================================
-        stage('PROD: Backup + Patch + Scan') {
+        stage('PROD Patch + Backup') {
             steps {
                 sh """
-                echo "Backing up PROD..."
+                echo "Backup PROD"
                 docker commit ${CONTAINER_PROD} ${BACKUP_IMAGE_PROD} || true
 
-                echo "Running PROD patch..."
+                echo "Patch PROD"
                 ansible-playbook \
                 -i ${ANSIBLE_DIR}/inventory/hosts.ini \
                 ${ANSIBLE_DIR}/patch.yml \
                 --extra-vars "env=prod"
                 """
+            }
+        }
 
+        // =====================================================
+        // PROD Trivy Scan (BLOCKING)
+        // =====================================================
+        stage('PROD Trivy Scan') {
+            steps {
                 sh """
-                echo "Running Trivy scan (PROD BLOCKING)..."
                 trivy image \
                     --exit-code 1 \
                     --severity HIGH,CRITICAL \
@@ -192,11 +229,16 @@ trivy-test.json
         }
 
         // =====================================================
-        // 7. Parse PROD CVE
+        // PROD Parse CVE
         // =====================================================
         stage('Parse PROD CVE') {
             steps {
                 script {
+
+                    if (!fileExists("trivy-prod.json")) {
+                        env.PROD_CVE_SUMMARY = "No scan data available"
+                        return
+                    }
 
                     def json = readFile("trivy-prod.json")
                     def parsed = new JsonSlurper().parseText(json)
@@ -228,7 +270,7 @@ LOW: ${low}
         }
 
         // =====================================================
-        // 8. PROD Email Report
+        // PROD Email Report
         // =====================================================
         stage('Send PROD Report') {
             steps {
@@ -238,19 +280,13 @@ LOW: ${low}
                     mimeType: 'text/html',
 
                     body: """
-<h2>🏭 PRODUCTION DEPLOYMENT COMPLETE</h2>
+<h2>🏭 PROD DEPLOYMENT COMPLETE</h2>
 
 <h3>🔐 CVE Summary</h3>
 <pre>${env.PROD_CVE_SUMMARY}</pre>
 
-<h3>🛠 Actions Taken</h3>
-<ul>
-<li>Patches applied in PROD</li>
-<li>Security scan executed (Trivy)</li>
-</ul>
-
 <h3>🚦 Policy</h3>
-<p>PROD = BLOCK HIGH/CRITICAL vulnerabilities</p>
+<p>HIGH/CRITICAL BLOCKED in production</p>
 """,
 
                     attachmentsPattern: """
@@ -263,7 +299,7 @@ trivy-prod.json
     }
 
     // =====================================================
-    // POST (ROLLBACK)
+    // ROLLBACK
     // =====================================================
     post {
         failure {
@@ -279,7 +315,7 @@ trivy-prod.json
 
             emailext(
                 to: "${params.EMAIL_TO}",
-                subject: "❌ PIPELINE FAILED - ROLLBACK EXECUTED",
+                subject: "❌ PIPELINE FAILED - ROLLBACK DONE",
                 body: "Rollback executed. Check Jenkins logs."
             )
         }
